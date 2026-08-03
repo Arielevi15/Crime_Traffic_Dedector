@@ -1,0 +1,8 @@
+# rfdetr pulls in torch. Plain `pip install -r requirements.txt` gets the
+# CPU build, which works but is slow. For the RTX 5070, install the CUDA
+# build of torch FIRST: https://pytorch.org/get-started/locally/
+numpy
+rfdetr
+trackers
+supervision
+opencv-python

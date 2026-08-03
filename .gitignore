@@ -1,0 +1,9 @@
+venv/
+__pycache__/
+*.pyc
+
+# Dashcam footage and annotated output. Large, binary, and not source.
+*.mp4
+*.avi
+*.mov
+*.mkv
