@@ -32,6 +32,8 @@ from wrong_way_detector import DetectorConfig, WrongWayDetector
 # like it is working while it tracks the wrong objects.
 VEHICLE_CLASS_IDS = {2, 3, 5, 7}
 
+# "base" and "large" still load, but rfdetr deprecated them in v1.7.0 and
+# will drop them in v2.0.0, so the default below is a current one.
 MODEL_VARIANTS = {
     "nano": "RFDETRNano",
     "small": "RFDETRSmall",
@@ -39,6 +41,7 @@ MODEL_VARIANTS = {
     "base": "RFDETRBase",
     "large": "RFDETRLarge",
 }
+DEFAULT_VARIANT = "medium"
 
 BOX_COLOR = (0, 200, 0)
 ALERT_COLOR = (0, 0, 255)
@@ -106,10 +109,11 @@ def _load_model(variant: str) -> Any:
 
     class_name = MODEL_VARIANTS[variant]
     if not hasattr(rfdetr, class_name):
-        raise SystemExit(
-            "This rfdetr build has no {0}. Available: {1}".format(
-                class_name, ", ".join(sorted(n for n in MODEL_VARIANTS.values() if hasattr(rfdetr, n)))
-            )
+        available = ", ".join(
+            sorted(name for name in MODEL_VARIANTS.values() if hasattr(rfdetr, name))
+        )
+        raise RuntimeError(
+            "This rfdetr build has no {0}. Available: {1}".format(class_name, available)
         )
     return getattr(rfdetr, class_name)()
 
@@ -135,7 +139,7 @@ def _draw(
 def run(
     video: str,
     output: Optional[str] = None,
-    variant: str = "base",
+    variant: str = DEFAULT_VARIANT,
     conf: float = 0.5,
     limit_frames: Optional[int] = None,
     probe_frames: int = 30,
@@ -148,13 +152,25 @@ def run(
     """
     from trackers import ByteTrackTracker
 
+    # Check the path before loading a model, so a typo costs a second
+    # rather than a weight download.
+    if not os.path.isfile(video):
+        raise FileNotFoundError(
+            "No such video: {0}\n"
+            "If you meant the bundled sample, re-run the sample cell so that "
+            "VIDEO points at it again.".format(video)
+        )
+
     model = _load_model(variant)
     tracker = ByteTrackTracker()
     detector = WrongWayDetector(config)
 
     capture = cv2.VideoCapture(video)
     if not capture.isOpened():
-        raise SystemExit("Could not open video: {0}".format(video))
+        raise RuntimeError(
+            "OpenCV could not open {0}. The file exists but the codec may be "
+            "unsupported -- try re-encoding to H.264 mp4.".format(video)
+        )
 
     writer: Optional[Any] = None
     if output is not None:
@@ -237,7 +253,10 @@ def main() -> None:
     parser.add_argument("--video", required=True, help="path to a dashcam video file")
     parser.add_argument("--output", help="write an annotated video here (optional)")
     parser.add_argument(
-        "--model", default="base", choices=sorted(MODEL_VARIANTS), help="RF-DETR variant"
+        "--model",
+        default=DEFAULT_VARIANT,
+        choices=sorted(MODEL_VARIANTS),
+        help="RF-DETR variant",
     )
     parser.add_argument("--conf", type=float, default=0.5, help="detection threshold")
     parser.add_argument(
