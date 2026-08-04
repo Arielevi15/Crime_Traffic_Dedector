@@ -124,6 +124,10 @@ class TrackState:
     """Per-vehicle position history and violation bookkeeping."""
 
     positions: Deque[Position]
+    # Zone this track was first seen in. Compared against the zone at alert
+    # time, it shows whether the vehicle was judged by the same baseline it
+    # helped train, or drifted into a zone taught by different traffic.
+    first_zone: Optional[Zone] = None
     # Consecutive frames this vehicle has been opposed to its zone baseline.
     violation_streak: int = 0
     # Sum of the cosine similarities over the current streak, so an alert
@@ -155,6 +159,7 @@ class WrongWayDetector:
         track = self.tracks.get(track_id)
         if track is None:
             track = TrackState(positions=deque(maxlen=self.config.max_history))
+            track.first_zone = self.baseline.zone_of(position)
             self.tracks[track_id] = track
         track.positions.append(position)
 
@@ -193,11 +198,25 @@ class WrongWayDetector:
             return None
 
         track.already_reported = True
+        mean_cosine = track.cos_sum / track.violation_streak
         return {
             "type": ALERT_TYPE,
             "track_id": track_id,
-            "confidence": self._confidence(track.cos_sum / track.violation_streak),
+            "confidence": self._confidence(mean_cosine),
             "position": (float(position[0]), float(position[1])),
+            # Everything needed to reconstruct the decision afterwards. An
+            # alert nobody can audit is a verdict, which principle 4
+            # forbids; it is also impossible to debug, which is how a
+            # false positive survives to accuse the next driver.
+            "evidence": {
+                "heading": (round(unit_x, 4), round(unit_y, 4)),
+                "baseline": (round(baseline_dir[0], 4), round(baseline_dir[1], 4)),
+                "zone": self.baseline.zone_of(position),
+                "zone_first_seen": self.tracks[track_id].first_zone,
+                "mean_cosine": round(mean_cosine, 4),
+                "streak": track.violation_streak,
+                "speed_px": round(speed, 2),
+            },
         }
 
     def _heading(self, track: TrackState) -> Optional[Tuple[float, float, float]]:

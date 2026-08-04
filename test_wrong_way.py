@@ -110,6 +110,36 @@ def test_wrong_way_vehicle_is_flagged_once_baseline_is_trusted() -> None:
     assert isinstance(position, tuple) and len(position) == 2
 
 
+def test_alert_carries_auditable_evidence() -> None:
+    """Every alert must be reconstructable after the fact (principle 4).
+
+    Without these fields an alert is an unexplained accusation, and a
+    false positive is impossible to diagnose from the payload alone.
+    """
+    detector = _trained_detector()
+    alert = _drive(detector, 7, BACKWARD[1], BACKWARD[2], LANE_FRAMES)[0]
+    evidence = alert["evidence"]
+
+    assert set(evidence) == {
+        "heading",
+        "baseline",
+        "zone",
+        "zone_first_seen",
+        "mean_cosine",
+        "streak",
+        "speed_px",
+    }
+    # Travelling -x against a +x baseline: a clean reversal.
+    assert evidence["heading"][0] < -0.99
+    assert evidence["baseline"][0] > 0.99
+    assert evidence["mean_cosine"] < -0.99
+    assert evidence["streak"] == DetectorConfig().violation_frames_required
+    assert evidence["speed_px"] > 0.0
+    # This trajectory never leaves zone (0, 0), so the vehicle was judged
+    # by the baseline of the zone it started in.
+    assert evidence["zone"] == evidence["zone_first_seen"]
+
+
 def test_no_false_alarm_during_warm_up() -> None:
     """A wrong-way vehicle seen before any baseline exists is not accused.
 
