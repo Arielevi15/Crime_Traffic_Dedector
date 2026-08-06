@@ -7,3 +7,9 @@ __pycache__/
 *.avi
 *.mov
 *.mkv
+
+# Track dumps from pipeline.py --dump-tracks are scratch by default. A dump
+# that reproduces a specific bug is worth keeping: put it in fixtures/ and
+# it will be tracked, so the case stays reproducible with no GPU.
+*.jsonl
+!fixtures/*.jsonl

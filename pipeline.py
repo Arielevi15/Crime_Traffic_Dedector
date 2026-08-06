@@ -144,11 +144,19 @@ def run(
     limit_frames: Optional[int] = None,
     probe_frames: int = 30,
     config: Optional[DetectorConfig] = None,
+    dump_tracks: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Run perception + the wrong-way module over a video file.
 
     Returns every alert produced, so a caller can assert on them. Alerts
     are also handed to `send_alert` as they happen.
+
+    `dump_tracks` writes the perception output -- one JSON line per frame,
+    holding each track's id and road-contact point -- to a file. That file
+    is everything a violation module ever sees (principle 5), so `replay.py`
+    can re-run the logic from it with no GPU, no model and no video, in
+    under a second. Use it whenever the thing being debugged is the logic
+    rather than the perception, which is most of the time.
     """
     from trackers import ByteTrackTracker
 
@@ -190,6 +198,7 @@ def run(
     alerted_ids: Set[int] = set()
     alerts: List[Dict[str, Any]] = []
     frame_index = 0
+    dump = open(dump_tracks, "w", encoding="utf-8") if dump_tracks else None
 
     try:
         while True:
@@ -216,12 +225,16 @@ def run(
                 detections = detections[np.isin(detections.class_id, vehicle_ids)]
             tracked = tracker.update(detections)
 
+            frame_tracks: List[List[float]] = []
             if tracked.tracker_id is not None:
                 for xyxy, raw_id in zip(tracked.xyxy, tracked.tracker_id):
                     if raw_id is None or int(raw_id) < 0:
                         continue
                     track_id = int(raw_id)
                     anchor = _bottom_center(xyxy)
+                    # Recorded before the detector sees it, and in feed
+                    # order, so a replay reproduces this run exactly.
+                    frame_tracks.append([track_id, anchor[0], anchor[1]])
                     alert = detector.update(track_id, anchor)
                     if alert is not None:
                         alert["frame"] = frame_index
@@ -231,6 +244,11 @@ def run(
                     if writer is not None:
                         _draw(frame, xyxy, track_id, anchor, track_id in alerted_ids)
 
+            if dump is not None:
+                dump.write(
+                    json.dumps({"frame": frame_index, "tracks": frame_tracks}) + "\n"
+                )
+
             if writer is not None:
                 writer.write(frame)
             if frame_index % 100 == 0:
@@ -239,12 +257,19 @@ def run(
         capture.release()
         if writer is not None:
             writer.release()
+        if dump is not None:
+            dump.close()
 
     if not reported:
         _report_class_ids(class_counts, frame_index)
     print("Done: {0} frames, {1} alert(s).".format(frame_index, len(alerts)))
     if output is not None:
         print("Annotated video written to {0}".format(output))
+    if dump_tracks is not None:
+        print(
+            "Track data written to {0} -- replay it locally with:\n"
+            "    python replay.py {0}".format(dump_tracks)
+        )
     return alerts
 
 
@@ -268,6 +293,10 @@ def main() -> None:
         default=30,
         help="frames to sample before printing the class-id report",
     )
+    parser.add_argument(
+        "--dump-tracks",
+        help="write per-frame track data here, for replay.py to re-run offline",
+    )
     args = parser.parse_args()
 
     run(
@@ -277,6 +306,7 @@ def main() -> None:
         conf=args.conf,
         limit_frames=args.limit_frames,
         probe_frames=args.probe_frames,
+        dump_tracks=args.dump_tracks,
     )
 
 
