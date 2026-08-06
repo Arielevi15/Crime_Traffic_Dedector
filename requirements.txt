@@ -1,8 +1,20 @@
-# rfdetr pulls in torch. Plain `pip install -r requirements.txt` gets the
-# CPU build, which works but is slow. For the RTX 5070, install the CUDA
-# build of torch FIRST: https://pytorch.org/get-started/locally/
+# Perception stack. Needed only where pipeline.py runs -- on Colab, where
+# torch, numpy and opencv already ship with the runtime. Do NOT install
+# this file wholesale there: it can replace the CUDA torch with a CPU one
+# and silently cost you the GPU. Install `rfdetr trackers` alone instead.
+#
+# wrong_way_detector.py, replay.py and test_wrong_way.py need none of it.
+# They are standard library only, by design, and run on any laptop.
 numpy
 rfdetr
 trackers
 supervision
 opencv-python
+
+# --- development ---
+# pyflakes catches undefined names and unused imports without importing
+# the module, so it works locally where cv2 and torch are absent. It
+# exists here because `python -m py_compile` passed on a file that raised
+# NameError at runtime -- a syntax check is not a correctness check.
+# Run before every push:  python -m pyflakes *.py
+pyflakes
