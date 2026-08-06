@@ -68,13 +68,55 @@ library (Roboflow), ByteTrack algorithm, Apache 2.0, detector-agnostic.
 
 | Component | Status |
 |---|---|
-| `wrong_way_detector.py` | **Done, tested.** `DetectorConfig`, `DirectionBaseline`, `TrackState`, `WrongWayDetector`. |
-| `test_wrong_way.py` | **Passing.** Synthetic trajectories, no GPU/video needed. |
-| `pipeline.py` | Written, wires RF-DETR + ByteTrack to `WrongWayDetector`. **Not yet run on real video** — needs GPU (local RTX 5070 or Colab). |
-| Stop-sign module | Not started. |
-| Solid/double line module | Not started. |
+| `wrong_way_detector.py` | Implemented. `DetectorConfig`, `DirectionBaseline`, `TrackState`, `WrongWayDetector`. **Produced a false positive on real video — see "What the first real run taught us".** |
+| `test_wrong_way.py` | **11 tests passing.** Synthetic trajectories, no GPU/video needed. Runs under pytest or standalone. |
+| `pipeline.py` | **Run successfully on GPU (Colab T4).** Full chain works end to end. Two defects found — class ids and the false positive. |
+| `run_on_colab.ipynb` | Working. Fetches code from GitHub, video from the `supervision` sample set or Drive. |
+| Stop-sign module | Not started — assigned to Track B, see `md/WORKPLAN.md`. |
+| Solid/double line module | Not started. Open dependency unresolved. |
 | Red-light module | Not started. |
 | Orchestration layer | Not started — out of scope until 2+ modules are live. |
+
+### Runtime environment
+
+GPU work runs on **Google Colab**, driven from VS Code via the official
+`google.colab` extension. The Colab runtime is a remote machine that
+cannot see the local disk, so `run_on_colab.ipynb` pulls the code from
+GitHub. **After every push, re-run the git cell** or the runtime keeps
+executing the previous version. Synthetic tests run locally with no GPU.
+
+## What the first real run taught us
+
+The chain works. Both defects it exposed are in our own logic, not in
+RF-DETR or ByteTrack.
+
+**1. Class ids do not match the assumption.** The run reported `id=3`
+(120 detections) and `id=8` (1 detection), with names unresolved because
+the `COCO_CLASSES` import failed and was swallowed. The pattern suggests
+RF-DETR uses the original 91-class COCO numbering (3=car, 8=truck), not
+the contiguous 80-class one that `VEHICLE_CLASS_IDS = {2, 3, 5, 7}`
+assumes. If so, **trucks and buses are being missed entirely**, and cars
+are tracked only by coincidence. Not yet confirmed — confirm before
+changing the constant.
+
+**2. A legal lane change was flagged**, confidence 0.903, implying a mean
+cosine near -0.86 (~150° deviation). A lane change is 10-20°. That gap
+means this is **not a tuning problem**. Two hypotheses, unresolved:
+
+- **Zone hopping** — the vehicle crossed into a zone whose baseline was
+  learned from other traffic and was judged against a stranger's rule.
+- **Dashcam perspective** — under ego motion, a same-direction vehicle
+  that is slower than the ego car closes in (bottom-centre moves down the
+  image) while a faster one recedes (moves up). Both legal, opposite in
+  image space. If this is the cause, image-space heading is not a valid
+  proxy for real-world direction and the module's premise needs revisiting.
+
+Alerts now carry an `evidence` block specifically to tell these apart.
+
+**The meta-lesson:** all synthetic tests passed while both defects were
+present. The tests prove the code does what we designed; they do not
+prove the design matches reality. Every surprise reality delivers becomes
+a new synthetic test — write the failing test *before* the fix.
 
 ## Repo conventions
 
@@ -93,14 +135,22 @@ library (Roboflow), ByteTrack algorithm, Apache 2.0, detector-agnostic.
       "track_id": int,
       "confidence": float,   # 0.0-1.0
       "position": tuple,     # (x, y) pixel coords at time of violation
+      "evidence": dict,      # module-specific; see below
   }
   ```
+  `evidence` holds whatever a human needs to reconstruct the decision
+  afterwards — for the wrong-way module: heading, baseline compared
+  against, zone, zone first seen, mean cosine, streak, speed. The fields
+  differ per module; the requirement does not. An alert nobody can audit
+  is a verdict (principle 4 forbids it) and is also undebuggable, which
+  is how a false positive survives to accuse the next driver.
 
 ---
 
 ## Task list: wrong-way driving module
 
-**Status: core logic done. Remaining work below.**
+**Status: runs end to end on real video; correctness not yet established.**
+Track A in `md/WORKPLAN.md` owns the remaining work.
 
 - [x] `DetectorConfig` dataclass with tunable thresholds
 - [x] `DirectionBaseline` — self-calibrating per-zone direction learner
@@ -110,13 +160,18 @@ library (Roboflow), ByteTrack algorithm, Apache 2.0, detector-agnostic.
 - [x] Synthetic tests: normal traffic never flagged, wrong-way vehicle
       flagged after baseline is trusted, no false alarms during warm-up,
       no duplicate alerts for an already-reported track
-- [ ] Run `pipeline.py` against a real dashcam video file (not synthetic
-      data) and manually verify RF-DETR class IDs actually match
-      `VEHICLE_CLASS_IDS = {2, 3, 5, 7}` for this specific model/version —
-      do not assume, print `detections.class_id` and cross-check against
-      `model.class_names` (or equivalent) on first run
-- [ ] Tune `DetectorConfig` thresholds against real footage (the synthetic
-      test values are reasonable starting points, not final)
+- [x] Every alert carries an auditable `evidence` block
+- [x] Run `pipeline.py` against real video on a GPU — done, Colab T4.
+      `_report_class_ids` prints observed ids over the first N frames
+- [ ] **Finish the class-id verification.** The report ran but printed
+      `<unknown>` for every name, so the cross-check never happened. Fix
+      the name lookup, then correct `VEHICLE_CLASS_IDS` — the evidence
+      points at the 91-class numbering, but confirm before changing it
+- [ ] **Resolve the false positive.** Diagnose with the `evidence` block,
+      reproduce it as a *failing* synthetic test, then fix
+- [ ] Tune `DetectorConfig` thresholds against real footage. Blocked on
+      the evaluation set (Track C) — tuning without measurement is
+      guessing, and principle 3 demands minimising false positives
 - [ ] Replace the `print()` placeholder in `send_alert()` with a real HTTP
       call once an API destination exists
 
