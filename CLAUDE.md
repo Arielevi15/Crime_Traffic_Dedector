@@ -38,6 +38,11 @@ Do not deviate from these without checking with the user first:
 See `md/ARCHITECTURE.md` for Mermaid diagrams of the data flow, module
 build order, and a worked internal-logic diagram of the wrong-way module.
 
+See `md/WORKPLAN.md` for who is building what, in what order, and the
+acceptance criteria for each step. Two developers work in parallel:
+Track A finishes the wrong-way module, Track B builds the stop-sign
+module.
+
 ## Architecture layers
 
 ```
