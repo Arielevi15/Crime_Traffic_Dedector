@@ -10,7 +10,7 @@ Geometry note: the default ``zone_size`` is 120, so every trajectory below
 is kept inside the single zone (0, 0) -- x and y in [0, 120) -- to keep
 the baseline learning in one place and the reasoning easy to follow.
 """
-
+#Yuval was here!
 from collections import deque
 from typing import Dict, List, Sequence, Tuple
 
