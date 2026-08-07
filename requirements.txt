@@ -11,6 +11,13 @@ trackers
 supervision
 opencv-python
 
+# --- corpus sources (corpus.py) ---
+# Imported lazily, so only whichever source you actually use is needed.
+# Hugging Face public repositories need no credentials; Kaggle needs an
+# API token once per machine.
+huggingface_hub
+kagglehub
+
 # --- development ---
 # pyflakes catches undefined names and unused imports without importing
 # the module, so it works locally where cv2 and torch are absent. It
