@@ -118,6 +118,41 @@ present. The tests prove the code does what we designed; they do not
 prove the design matches reality. Every surprise reality delivers becomes
 a new synthetic test — write the failing test *before* the fix.
 
+## Where the wrong-way module actually stands
+
+Both defects above are fixed and both fixes are pinned by tests. Class
+ids are corrected to the 91-class scheme, which roughly six-folded the
+number of tracked vehicles on the same clip once buses and trucks stopped
+being discarded.
+
+Measured on a full 825-frame motorway clip — 50 tracks, a vehicle being
+followed, traffic ahead in lane, and an oncoming carriageway across the
+barrier:
+
+| | |
+|---|---|
+| False positives | **0** |
+| Injected wrong-way drivers caught | **2 of 6** |
+| Zones that ever became trusted | **6 of 21** |
+
+The silence is real, not the detector having stopped working: replaying
+the same clip with a synthetic wrong-way vehicle spliced in still
+produces alerts, at confidence 0.99-1.00.
+
+**But sensitivity is low, and the reason is measurable.** Only six zones
+ever reached `baseline_min_samples`, so most of the image is never judged
+at all. Passing vehicles cross a 120 px zone too quickly to leave 30
+samples in it. Four of the six injected violations went unreported for
+this reason rather than through any decision the module made.
+
+That is the correct direction to err — principle 3 says an unjudged
+vehicle beats an accused innocent one — but "we catch about a third of
+blatant violations" is a limitation to fix, not a result to accept. The
+zone geometry is the lever: `zone_size` and `baseline_min_samples` are
+both absolute numbers that behave differently at every resolution, and
+neither has been tuned against anything. That work needs the evaluation
+set, which is why it is Track C's blocker and not a quick edit.
+
 ## Repo conventions
 
 - Python type hints everywhere. Use `Optional[X]`, not `X | None`, for

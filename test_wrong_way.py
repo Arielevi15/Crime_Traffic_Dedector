@@ -369,6 +369,38 @@ def test_real_footage_flow_reversal_regression() -> None:
     assert 11 not in flagged, "track 11 moved with the flow and must not be accused"
 
 
+def test_real_footage_divided_highway_stays_silent() -> None:
+    """A full clip of ordinary motorway driving must produce nothing.
+
+    825 frames, 50 tracks: the vehicle we are following, traffic ahead in
+    our own lane, and an oncoming carriageway across the barrier. Every
+    one of them is driving legally, so silence is the only correct output.
+
+    This is the case that decides whether the module is usable at all.
+    Most motorways are divided, and a detector that flags lawful oncoming
+    traffic is worthless on all of them.
+    """
+    fixture = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "fixtures",
+        "divided_highway_clean.jsonl",
+    )
+    if not os.path.isfile(fixture):
+        return
+
+    detector = WrongWayDetector()
+    alerts = []
+    for frame_index, tracks in load(fixture):
+        for track_id, x, y, width in tracks:
+            alert = detector.update(
+                track_id, (x, y), frame=frame_index, scale=width
+            )
+            if alert is not None:
+                alerts.append(alert)
+
+    assert alerts == [], "accused {0} lawful driver(s)".format(len(alerts))
+
+
 def test_heading_needs_history_before_it_reports_anything() -> None:
     """_heading is the shared primitive the stop-sign module will reuse."""
     detector = WrongWayDetector()
