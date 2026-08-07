@@ -236,7 +236,7 @@ def run(
                     # Recorded before the detector sees it, and in feed
                     # order, so a replay reproduces this run exactly.
                     frame_tracks.append([track_id, anchor[0], anchor[1]])
-                    alert = detector.update(track_id, anchor)
+                    alert = detector.update(track_id, anchor, frame=frame_index)
                     if alert is not None:
                         alert["frame"] = frame_index
                         alerts.append(alert)

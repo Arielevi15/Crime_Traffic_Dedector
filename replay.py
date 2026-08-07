@@ -65,7 +65,7 @@ def replay(
         frames += 1
         for track_id, x, y in tracks:
             track_ids.add(track_id)
-            alert = detector.update(track_id, (x, y))
+            alert = detector.update(track_id, (x, y), frame=frame_index)
 
             if verbose and watch is not None and track_id == watch:
                 _trace(detector, frame_index, track_id, (x, y))

@@ -51,6 +51,34 @@ class DetectorConfig:
     # without limit.
     max_history: int = 60
 
+    # --- Peer agreement ---
+    # Disagreeing with the learned baseline is not enough to accuse a
+    # driver, because the baseline can simply be out of date: on a dashcam
+    # the apparent flow reverses whenever the ego vehicle turns, and then
+    # every vehicle present contradicts a direction learned a minute ago.
+    # A violation additionally requires disagreeing with the traffic
+    # travelling alongside the vehicle *at that moment*.
+    #
+    # How many frames back a peer's heading still counts as "now".
+    # This has to be measured in frames, not in samples: a quiet zone
+    # collects samples slowly, so a fixed-size sample window there reaches
+    # tens of frames into the past and reports history as though it were
+    # the present. That is precisely the staleness this rule exists to
+    # defeat.
+    peer_max_age: int = 12
+    # Hard cap on stored headings per zone, so a busy zone cannot grow
+    # without limit. Age is what decides relevance; this only bounds memory.
+    peer_window: int = 64
+    # Distinct other vehicles needed before their agreement counts as
+    # evidence. One is enough: per principle 3 a single contemporary moving
+    # the same way is reason to stay quiet, and staying quiet is the safe
+    # failure.
+    peer_min_tracks: int = 1
+    # How much those peers must agree with each other to count at all.
+    peer_min_coherence: float = 0.6
+    # Cosine above which the vehicle counts as agreeing with its peers.
+    peer_agree_cos: float = 0.0
+
 
 @dataclass
 class _ZoneStats:
@@ -78,6 +106,11 @@ class DirectionBaseline:
     def __init__(self, config: DetectorConfig) -> None:
         self.config = config
         self._zones: Dict[Zone, _ZoneStats] = {}
+        # Two views of the same question, at different time scales.
+        # `_zones` is what traffic has done here over the long run;
+        # `_recent` is what it is doing right now. A baseline can go stale;
+        # contemporaries cannot.
+        self._recent: Dict[Zone, Deque[Tuple[int, int, float, float]]] = {}
 
     def zone_of(self, position: Position) -> Zone:
         """Return the grid cell containing a pixel position."""
@@ -104,6 +137,71 @@ class DirectionBaseline:
             return False, None
 
         return True, (stats.dir_x / length, stats.dir_y / length)
+
+    def record(
+        self, position: Position, heading: Position, track_id: int, frame: int
+    ) -> None:
+        """Note what one vehicle is doing right now, for peer comparison.
+
+        Unlike :meth:`update`, this records *every* moving vehicle,
+        including one already mid-violation. Its job is to measure what
+        traffic is actually doing, suspects included -- excluding them is
+        what let a stale baseline stand unchallenged.
+        """
+        zone = self.zone_of(position)
+        window = self._recent.get(zone)
+        if window is None:
+            window = deque(maxlen=self.config.peer_window)
+            self._recent[zone] = window
+        window.append((frame, track_id, heading[0], heading[1]))
+
+    def peer_consensus(
+        self, position: Position, exclude_track_id: int, frame: int
+    ) -> Optional[Position]:
+        """Direction this vehicle's contemporaries are travelling, if they agree.
+
+        Searches the vehicle's zone and the eight around it. Zones are small
+        relative to the image, so traffic moving alongside a vehicle
+        routinely sits in a neighbouring cell -- restricting this to one
+        zone would miss most genuine peers.
+
+        The judged vehicle is excluded: it may not vouch for itself.
+
+        Returns None when too few other vehicles have been seen recently, or
+        when the ones that have disagree among themselves. Both mean there
+        is no consensus to appeal to, and the caller falls back to the
+        learned baseline alone.
+        """
+        zone_x, zone_y = self.zone_of(position)
+        oldest = frame - self.config.peer_max_age
+
+        # One vote per vehicle, and only its latest heading. Averaging every
+        # sample instead would let a single long-lived track outvote the
+        # rest, and would smear its own history across the result: a vehicle
+        # turning through 180 degrees over ten frames averages out to a
+        # direction nobody ever travelled, and the suspect is then measured
+        # against a fiction.
+        latest: Dict[int, Tuple[int, float, float]] = {}
+        for offset_x in (-1, 0, 1):
+            for offset_y in (-1, 0, 1):
+                window = self._recent.get((zone_x + offset_x, zone_y + offset_y))
+                if window is None:
+                    continue
+                for seen_at, track_id, unit_x, unit_y in window:
+                    if track_id == exclude_track_id or seen_at < oldest:
+                        continue
+                    known = latest.get(track_id)
+                    if known is None or seen_at > known[0]:
+                        latest[track_id] = (seen_at, unit_x, unit_y)
+
+        if len(latest) < self.config.peer_min_tracks:
+            return None
+        sum_x = sum(entry[1] for entry in latest.values())
+        sum_y = sum(entry[2] for entry in latest.values())
+        length = hypot(sum_x, sum_y)
+        if length / len(latest) < self.config.peer_min_coherence:
+            return None
+        return (sum_x / length, sum_y / length)
 
     def update(self, position: Position, heading: Position) -> None:
         """Record one unit heading vector as a vote for its zone."""
@@ -145,9 +243,10 @@ class WrongWayDetector:
         self.config = config if config is not None else DetectorConfig()
         self.baseline = DirectionBaseline(self.config)
         self.tracks: Dict[int, TrackState] = {}
+        self._call_counter = 0
 
     def update(
-        self, track_id: int, position: Position
+        self, track_id: int, position: Position, frame: Optional[int] = None
     ) -> Optional[Dict[str, Any]]:
         """Feed one vehicle's position for one frame.
 
@@ -155,7 +254,16 @@ class WrongWayDetector:
         the first time this vehicle is confirmed to be driving the wrong
         way, and None on every other call -- which is the overwhelming
         majority of calls.
+
+        `frame` is the video frame number. Pass it: peer agreement is
+        measured in frames, and without a real one the detector falls back
+        to counting calls, which drifts as soon as more than one vehicle is
+        visible. The parameter is optional only so that a caller feeding a
+        single vehicle can ignore it.
         """
+        if frame is None:
+            self._call_counter += 1
+            frame = self._call_counter
         track = self.tracks.get(track_id)
         if track is None:
             track = TrackState(positions=deque(maxlen=self.config.max_history))
@@ -181,6 +289,8 @@ class WrongWayDetector:
         # before the streak completes.
         if track.violation_streak == 0:
             self.baseline.update(position, (unit_x, unit_y))
+        # The peer record takes everyone, suspects included -- see `record`.
+        self.baseline.record(position, (unit_x, unit_y), track_id, frame)
         if not trusted or baseline_dir is None:
             return None
 
@@ -189,6 +299,19 @@ class WrongWayDetector:
             track.violation_streak = 0
             track.cos_sum = 0.0
             return None
+
+        # Contradicting the baseline is necessary but not sufficient. If the
+        # traffic alongside this vehicle right now is doing the same thing,
+        # the flow has changed and the baseline is what is out of date --
+        # accusing the driver would be accusing them of the scene moving.
+        peer_dir = self.baseline.peer_consensus(position, track_id, frame)
+        peer_cosine: Optional[float] = None
+        if peer_dir is not None:
+            peer_cosine = unit_x * peer_dir[0] + unit_y * peer_dir[1]
+            if peer_cosine > self.config.peer_agree_cos:
+                track.violation_streak = 0
+                track.cos_sum = 0.0
+                return None
 
         track.violation_streak += 1
         track.cos_sum += cosine
@@ -216,6 +339,17 @@ class WrongWayDetector:
                 "mean_cosine": round(mean_cosine, 4),
                 "streak": track.violation_streak,
                 "speed_px": round(speed, 2),
+                # What the surrounding traffic was doing, and how far this
+                # vehicle departed from it. `None` means there were no
+                # contemporaries to compare against, so the alert rests on
+                # the learned baseline alone -- weaker evidence, and worth
+                # seeing in the payload.
+                "peers": (
+                    None
+                    if peer_dir is None
+                    else (round(peer_dir[0], 4), round(peer_dir[1], 4))
+                ),
+                "peer_cosine": None if peer_cosine is None else round(peer_cosine, 4),
             },
         }
 

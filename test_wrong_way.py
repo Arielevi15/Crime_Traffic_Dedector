@@ -11,9 +11,11 @@ is kept inside the single zone (0, 0) -- x and y in [0, 120) -- to keep
 the baseline learning in one place and the reasoning easy to follow.
 """
 #Yuval was here!
+import os
 from collections import deque
 from typing import Dict, List, Sequence, Tuple
 
+from replay import load
 from wrong_way_detector import (
     DetectorConfig,
     DirectionBaseline,
@@ -42,7 +44,8 @@ def _drive(
     alerts: List[Alert] = []
     x, y = start
     for _ in range(frames):
-        alert = detector.update(track_id, (x, y))
+        detector._test_frame = getattr(detector, "_test_frame", 0) + 1
+        alert = detector.update(track_id, (x, y), frame=detector._test_frame)
         if alert is not None:
             alerts.append(alert)
         x += step[0]
@@ -57,8 +60,11 @@ def _drive_together(
     alerts: List[Alert] = []
     live = [(track_id, list(start), step) for track_id, start, step in vehicles]
     for _ in range(frames):
+        detector._test_frame = getattr(detector, "_test_frame", 0) + 1
         for track_id, position, step in live:
-            alert = detector.update(track_id, (position[0], position[1]))
+            alert = detector.update(
+                track_id, (position[0], position[1]), frame=detector._test_frame
+            )
             if alert is not None:
                 alerts.append(alert)
             position[0] += step[0]
@@ -128,6 +134,8 @@ def test_alert_carries_auditable_evidence() -> None:
         "mean_cosine",
         "streak",
         "speed_px",
+        "peers",
+        "peer_cosine",
     }
     # Travelling -x against a +x baseline: a clean reversal.
     assert evidence["heading"][0] < -0.99
@@ -209,6 +217,61 @@ def test_zone_with_two_way_traffic_is_never_trusted() -> None:
     assert not trusted
 
 
+def test_traffic_that_reverses_together_is_not_accused() -> None:
+    """When the whole flow reverses, nobody is driving the wrong way.
+
+    Reproduces the false positives found on real dashcam footage: the
+    scene's apparent flow reversed (ego motion), every vehicle present was
+    moving the new way, and the module accused them of contradicting a
+    baseline learned minutes earlier.
+
+    The failure was self-reinforcing. Each vehicle that disagreed entered a
+    violation streak, and a vehicle mid-violation stops voting -- so the
+    baseline could never learn the new reality, and the streaks ran to
+    completion. The rule that makes a lone offender detectable is exactly
+    what makes a reversed flow indefensible.
+
+    The distinction is not vehicle-versus-history but vehicle-versus-peers:
+    a driver is only a violator if the traffic around them at that moment
+    disagrees too.
+    """
+    detector = _trained_detector()
+    alerts = _drive_together(
+        detector,
+        [
+            (20, (116.0, 55.0), (-3.0, 0.0)),
+            (21, (116.0, 60.0), (-3.0, 0.0)),
+            (22, (116.0, 65.0), (-3.0, 0.0)),
+        ],
+        LANE_FRAMES,
+    )
+    assert alerts == [], "accused {0} vehicle(s) that all moved together".format(
+        len(alerts)
+    )
+
+
+def test_lone_offender_is_still_caught_among_normal_traffic() -> None:
+    """The other half of the peer rule: disagreeing with peers is a violation.
+
+    Guards against 'fixing' the false positive by simply going quiet. One
+    vehicle drives against three that are travelling normally, all in the
+    same place at the same time, and it must still be reported.
+    """
+    detector = _trained_detector()
+    alerts = _drive_together(
+        detector,
+        [
+            (30, (5.0, 55.0), (3.0, 0.0)),
+            (31, (5.0, 60.0), (3.0, 0.0)),
+            (32, (5.0, 65.0), (3.0, 0.0)),
+            (33, (116.0, 70.0), (-3.0, 0.0)),
+        ],
+        LANE_FRAMES,
+    )
+    assert len(alerts) == 1
+    assert alerts[0]["track_id"] == 33
+
+
 def test_offender_stops_voting_into_the_baseline() -> None:
     """A vehicle mid-violation must not rewrite the baseline it is judged by.
 
@@ -220,6 +283,40 @@ def test_offender_stops_voting_into_the_baseline() -> None:
     trusted, direction = detector.baseline.state((60.0, 60.0))
     assert trusted
     assert direction is not None and direction[0] > 0.8
+
+
+def test_real_footage_flow_reversal_regression() -> None:
+    """Replays the dashcam clip that produced the original false positives.
+
+    Perception output only -- no GPU, no model, no video. `fixtures/` holds
+    what the modules actually consume, so this case stays reproducible for
+    as long as the repo exists.
+
+    Tracks 7 and 11 were accused while every vehicle around them moved the
+    same way; the peer rule now clears both. Track 2 still fires and is
+    *not* asserted away here: its heading was 1.79 px/frame, barely over
+    `min_speed_px`, which is a threshold too permissive for a 2040 px wide
+    frame rather than a flaw in the decision logic. Tuning it belongs with
+    the evaluation set, where it can be measured across many clips instead
+    of fitted to this one.
+    """
+    fixture = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "fixtures",
+        "flow_reversal_false_positive.jsonl",
+    )
+    if not os.path.isfile(fixture):
+        return  # fixture not checked out; nothing to assert
+
+    detector = WrongWayDetector()
+    flagged = set()
+    for frame_index, tracks in load(fixture):
+        for track_id, x, y in tracks:
+            if detector.update(track_id, (x, y), frame=frame_index) is not None:
+                flagged.add(track_id)
+
+    assert 7 not in flagged, "track 7 moved with the flow and must not be accused"
+    assert 11 not in flagged, "track 11 moved with the flow and must not be accused"
 
 
 def test_heading_needs_history_before_it_reports_anything() -> None:
