@@ -153,11 +153,12 @@ def run(
     are also handed to `send_alert` as they happen.
 
     `dump_tracks` writes the perception output -- one JSON line per frame,
-    holding each track's id and road-contact point -- to a file. That file
-    is everything a violation module ever sees (principle 5), so `replay.py`
-    can re-run the logic from it with no GPU, no model and no video, in
-    under a second. Use it whenever the thing being debugged is the logic
-    rather than the perception, which is most of the time.
+    holding each track's id, road-contact point and apparent width -- to a
+    file. That file is everything a violation module ever sees (principle
+    5), so `replay.py` can re-run the logic from it with no GPU, no model
+    and no video, in under a second. Use it whenever the thing being
+    debugged is the logic rather than the perception, which is most of the
+    time.
     """
     from trackers import ByteTrackTracker
 
@@ -233,10 +234,16 @@ def run(
                         continue
                     track_id = int(raw_id)
                     anchor = _bottom_center(xyxy)
+                    # Apparent vehicle size. The detector needs it to tell a
+                    # vehicle that is genuinely crawling from one that only
+                    # looks slow because the ego car is following it.
+                    width = float(xyxy[2]) - float(xyxy[0])
                     # Recorded before the detector sees it, and in feed
                     # order, so a replay reproduces this run exactly.
-                    frame_tracks.append([track_id, anchor[0], anchor[1]])
-                    alert = detector.update(track_id, anchor, frame=frame_index)
+                    frame_tracks.append([track_id, anchor[0], anchor[1], width])
+                    alert = detector.update(
+                        track_id, anchor, frame=frame_index, scale=width
+                    )
                     if alert is not None:
                         alert["frame"] = frame_index
                         alerts.append(alert)

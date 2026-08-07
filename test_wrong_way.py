@@ -136,6 +136,8 @@ def test_alert_carries_auditable_evidence() -> None:
         "speed_px",
         "peers",
         "peer_cosine",
+        "scale_px",
+        "required_speed_px",
     }
     # Travelling -x against a +x baseline: a clean reversal.
     assert evidence["heading"][0] < -0.99
@@ -197,6 +199,51 @@ def test_slow_and_stationary_vehicles_are_ignored() -> None:
     detector = _trained_detector()
     assert _drive(detector, 7, (116.0, 60.0), (-0.5, 0.0), LANE_FRAMES) == []
     assert _drive(detector, 8, (60.0, 60.0), (0.0, 0.0), LANE_FRAMES) == []
+
+
+def test_vehicle_being_followed_is_not_judged() -> None:
+    """The car ahead in your own lane must never be accused.
+
+    Reproduces the false positive found on real footage. Following a
+    vehicle at a near-constant distance leaves it almost stationary in the
+    image -- a couple of pixels per frame, less than the jitter of its own
+    bounding box. Read as pixels that looks like motion; read against its
+    width it is plainly noise.
+
+    This is the most common object in any dashcam clip, so getting it
+    wrong means firing constantly in production.
+    """
+    detector = _trained_detector()
+    # 90 px wide, drifting 2 px/frame against the +x baseline: 2.2% of its
+    # own width, well inside detector jitter.
+    alerts: List[Alert] = []
+    x = 116.0
+    for frame in range(LANE_FRAMES):
+        alert = detector.update(9, (x, 60.0), frame=1000 + frame, scale=90.0)
+        if alert is not None:
+            alerts.append(alert)
+        x -= 2.0
+    assert alerts == []
+
+
+def test_distant_vehicle_moving_the_same_pixels_is_judged() -> None:
+    """The other half: the same pixel speed on a small vehicle is real motion.
+
+    Guards against 'fixing' the previous case by raising an absolute
+    threshold, which would go blind to genuinely fast traffic far down the
+    road. 2 px/frame is 10% of a 20 px wide vehicle's width -- motion, not
+    jitter.
+    """
+    detector = _trained_detector()
+    alerts: List[Alert] = []
+    x = 116.0
+    for frame in range(LANE_FRAMES):
+        alert = detector.update(9, (x, 60.0), frame=1000 + frame, scale=20.0)
+        if alert is not None:
+            alerts.append(alert)
+        x -= 2.0
+    assert len(alerts) == 1
+    assert alerts[0]["evidence"]["scale_px"] == 20.0
 
 
 def test_zone_with_two_way_traffic_is_never_trusted() -> None:
@@ -311,8 +358,11 @@ def test_real_footage_flow_reversal_regression() -> None:
     detector = WrongWayDetector()
     flagged = set()
     for frame_index, tracks in load(fixture):
-        for track_id, x, y in tracks:
-            if detector.update(track_id, (x, y), frame=frame_index) is not None:
+        for track_id, x, y, width in tracks:
+            alert = detector.update(
+                track_id, (x, y), frame=frame_index, scale=width
+            )
+            if alert is not None:
                 flagged.add(track_id)
 
     assert 7 not in flagged, "track 7 moved with the flow and must not be accused"

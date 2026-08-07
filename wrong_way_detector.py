@@ -39,7 +39,24 @@ class DetectorConfig:
     baseline_min_samples: int = 30          # votes a zone needs before it may be trusted
     opposite_cos_threshold: float = -0.3    # below this, a heading counts as opposed
     violation_frames_required: int = 10     # consecutive opposed frames before alerting
-    min_speed_px: float = 1.5               # below this speed the heading is noise; ignore it
+
+    # Minimum speed for a heading to be believed, as a fraction of the
+    # vehicle's own apparent width per frame.
+    #
+    # An absolute pixel threshold cannot express this. The vehicle you are
+    # following sits at a near-constant distance, so it barely moves in the
+    # image -- a few pixels per frame, which is smaller than the jitter of
+    # its own bounding box. Measured in pixels that looked like motion;
+    # measured against its width it is plainly noise. Meanwhile a distant
+    # vehicle, only twenty pixels wide, can genuinely be travelling fast
+    # while moving those same few pixels.
+    #
+    # Provisional: 2-3% per frame was jitter on both clips examined, so 5%
+    # clears it with margin. Confirm against the evaluation set.
+    min_speed_fraction: float = 0.05
+    # Fallback for callers that cannot supply a vehicle size. Absolute, and
+    # therefore resolution-dependent -- prefer passing `scale`.
+    min_speed_px: float = 1.5
 
     # How much a zone's votes must agree before it is trusted, 0..1. The
     # EMA of unit vectors keeps length ~1 while traffic is consistent and
@@ -246,7 +263,11 @@ class WrongWayDetector:
         self._call_counter = 0
 
     def update(
-        self, track_id: int, position: Position, frame: Optional[int] = None
+        self,
+        track_id: int,
+        position: Position,
+        frame: Optional[int] = None,
+        scale: Optional[float] = None,
     ) -> Optional[Dict[str, Any]]:
         """Feed one vehicle's position for one frame.
 
@@ -260,6 +281,13 @@ class WrongWayDetector:
         to counting calls, which drifts as soon as more than one vehicle is
         visible. The parameter is optional only so that a caller feeding a
         single vehicle can ignore it.
+
+        `scale` is the vehicle's apparent size in pixels -- its bounding box
+        width. Pass it: it is what separates a vehicle that is genuinely
+        crawling from one that merely looks slow because you are following
+        it. Without it the detector falls back to an absolute pixel
+        threshold, which is resolution-dependent and cannot tell those two
+        apart.
         """
         if frame is None:
             self._call_counter += 1
@@ -275,7 +303,11 @@ class WrongWayDetector:
         if heading is None:
             return None
         unit_x, unit_y, speed = heading
-        if speed < self.config.min_speed_px:
+        if scale is not None and scale > 0.0:
+            required_speed = self.config.min_speed_fraction * scale
+        else:
+            required_speed = self.config.min_speed_px
+        if speed < required_speed:
             return None
 
         # Read the baseline first, then vote. A wrong-way vehicle must not
@@ -339,6 +371,11 @@ class WrongWayDetector:
                 "mean_cosine": round(mean_cosine, 4),
                 "streak": track.violation_streak,
                 "speed_px": round(speed, 2),
+                # The bar this vehicle's speed had to clear, and what set
+                # it. A `scale` of None means the alert rests on an absolute
+                # pixel threshold, which is weaker evidence.
+                "scale_px": None if scale is None else round(scale, 1),
+                "required_speed_px": round(required_speed, 2),
                 # What the surrounding traffic was doing, and how far this
                 # vehicle departed from it. `None` means there were no
                 # contemporaries to compare against, so the alert rests on

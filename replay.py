@@ -26,15 +26,20 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from wrong_way_detector import DetectorConfig, WrongWayDetector
 
-Frame = Tuple[int, List[Tuple[int, float, float]]]
+Track = Tuple[int, float, float, Optional[float]]
+Frame = Tuple[int, List[Track]]
 
 
 def load(path: str) -> Iterator[Frame]:
-    """Yield ``(frame_index, [(track_id, x, y), ...])`` in recorded order.
+    """Yield ``(frame_index, [(track_id, x, y, width), ...])`` in recorded order.
 
     Feed order within a frame is preserved deliberately: the baseline is
     updated as tracks are processed, so a different order would produce a
     different result and the replay would stop being faithful.
+
+    Dumps written before vehicle width was recorded have three fields per
+    track instead of four; those yield a width of None, and the detector
+    falls back to its absolute speed threshold.
     """
     with open(path, encoding="utf-8") as handle:
         for line in handle:
@@ -42,8 +47,13 @@ def load(path: str) -> Iterator[Frame]:
             if not line:
                 continue
             record = json.loads(line)
-            tracks = [
-                (int(entry[0]), float(entry[1]), float(entry[2]))
+            tracks: List[Track] = [
+                (
+                    int(entry[0]),
+                    float(entry[1]),
+                    float(entry[2]),
+                    float(entry[3]) if len(entry) > 3 else None,
+                )
                 for entry in record["tracks"]
             ]
             yield int(record["frame"]), tracks
@@ -63,9 +73,11 @@ def replay(
 
     for frame_index, tracks in load(path):
         frames += 1
-        for track_id, x, y in tracks:
+        for track_id, x, y, width in tracks:
             track_ids.add(track_id)
-            alert = detector.update(track_id, (x, y), frame=frame_index)
+            alert = detector.update(
+                track_id, (x, y), frame=frame_index, scale=width
+            )
 
             if verbose and watch is not None and track_id == watch:
                 _trace(detector, frame_index, track_id, (x, y))
@@ -160,6 +172,9 @@ def main() -> None:
         default=defaults.violation_frames_required,
     )
     parser.add_argument("--min-speed-px", type=float, default=defaults.min_speed_px)
+    parser.add_argument(
+        "--min-speed-fraction", type=float, default=defaults.min_speed_fraction
+    )
     args = parser.parse_args()
 
     config = DetectorConfig(
@@ -171,6 +186,7 @@ def main() -> None:
         opposite_cos_threshold=args.opposite_cos_threshold,
         violation_frames_required=args.violation_frames_required,
         min_speed_px=args.min_speed_px,
+        min_speed_fraction=args.min_speed_fraction,
     )
     replay(args.tracks, config=config, watch=args.track, verbose=args.verbose)
 
