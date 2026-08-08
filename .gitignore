@@ -7,3 +7,21 @@ __pycache__/
 *.avi
 *.mov
 *.mkv
+
+# Track dumps from pipeline.py --dump-tracks are scratch by default. A dump
+# that reproduces a specific bug is worth keeping: put it in fixtures/ and
+# it will be tracked, so the case stays reproducible with no GPU.
+*.jsonl
+!fixtures/*.jsonl
+
+# Credentials. Keys belong in Colab's secret store, never in the repo --
+# this repo is public, and a key committed once stays in the history even
+# after the file is deleted. Revoke and reissue rather than trying to
+# scrub it.
+kaggle.json
+*.pem
+*.key
+.env
+.env.*
+secrets.*
+clips/

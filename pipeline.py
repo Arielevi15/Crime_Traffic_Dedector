@@ -15,6 +15,7 @@ Usage:
 
 import argparse
 import json
+import os
 from collections import Counter
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
@@ -23,14 +24,37 @@ import numpy as np
 
 from wrong_way_detector import DetectorConfig, WrongWayDetector
 
-# COCO ids for car, motorcycle, bus, truck.
+# COCO has two numbering schemes and they disagree about every vehicle.
+# The 80-class contiguous scheme is what most YOLO code uses; the 91-class
+# scheme is the original COCO annotation ids, with gaps where categories
+# were dropped.
+COCO_80 = {
+    0: "person", 1: "bicycle", 2: "car", 3: "motorcycle", 4: "airplane",
+    5: "bus", 6: "train", 7: "truck", 8: "boat", 9: "traffic light",
+    10: "fire hydrant", 11: "stop sign", 12: "parking meter", 13: "bench",
+}
+COCO_91 = {
+    1: "person", 2: "bicycle", 3: "car", 4: "motorcycle", 5: "airplane",
+    6: "bus", 7: "train", 8: "truck", 9: "boat", 10: "traffic light",
+    11: "fire hydrant", 13: "stop sign", 14: "parking meter", 15: "bench",
+}
+
+# Car, motorcycle, bus, truck under the 91-class scheme.
 #
-# DO NOT TRUST THIS SET until you have seen the report that
-# `_report_class_ids` prints on the first run against a real video. Class
-# numbering is a property of the specific model build, not a law of
-# nature, and silently mismatched ids would make the whole pipeline look
-# like it is working while it tracks the wrong objects.
-VEHICLE_CLASS_IDS = {2, 3, 5, 7}
+# Established from footage, not assumed. Two clips reported id=3 for the
+# cars, id=10 for tunnel signals and motorway gantries, and id=6 for a
+# coach. Under the 80-class scheme those same ids mean motorcycle, fire
+# hydrant and train -- there were no fire hydrants or trains in either
+# clip, and there was plainly a coach.
+#
+# The previous value, {2, 3, 5, 7}, meant bicycle/car/airplane/train here:
+# cars were tracked by coincidence while every bus, truck and motorcycle
+# was silently discarded.
+#
+# If you change model or model version, verify again. The report that
+# `_report_class_ids` prints exists for exactly this and will not stay
+# quiet when it cannot resolve a name.
+VEHICLE_CLASS_IDS = {3, 4, 6, 8}
 
 # "base" and "large" still load, but rfdetr deprecated them in v1.7.0 and
 # will drop them in v2.0.0, so the default below is a current one.
@@ -76,28 +100,80 @@ def _bottom_center(xyxy: Sequence[float]) -> Tuple[float, float]:
     return ((x1 + x2) / 2.0, y2)
 
 
-def _report_class_ids(counts: Counter, frames: int) -> None:
-    """Print observed class ids against the model's own names.
+def _model_class_names(model: Any) -> Optional[Dict[int, str]]:
+    """Ask the model itself what its class ids mean, or admit it cannot say.
 
-    This exists to settle the open question in CLAUDE.md: whether
-    VEHICLE_CLASS_IDS actually matches this model build. Read the table,
-    then either confirm the constant or correct it.
+    Returns None rather than an empty mapping. The distinction matters: an
+    earlier version swallowed the failed import and printed a tidy table of
+    `<unknown>`, which looks like verification and contains none. That
+    single silent fallback is why the wrong class ids survived two runs.
     """
-    try:
-        from rfdetr.util.coco_classes import COCO_CLASSES
-    except ImportError:  # pragma: no cover - depends on rfdetr version
-        COCO_CLASSES = {}
+    for module_path, attribute in (
+        ("rfdetr.util.coco_classes", "COCO_CLASSES"),
+        ("rfdetr.util.coco_classes", "COCO_CLASSES_91"),
+    ):
+        try:
+            module = __import__(module_path, fromlist=[attribute])
+            names = getattr(module, attribute)
+            if names:
+                return {int(key): str(value) for key, value in dict(names).items()}
+        except Exception:  # noqa: BLE001 - any failure here means "cannot say"
+            pass
+
+    for attribute in ("class_names", "classes", "names"):
+        names = getattr(model, attribute, None)
+        if isinstance(names, dict) and names:
+            return {int(key): str(value) for key, value in names.items()}
+        if isinstance(names, (list, tuple)) and names:
+            return {index: str(value) for index, value in enumerate(names)}
+    return None
+
+
+def _report_class_ids(counts: Counter, frames: int, model: Any) -> None:
+    """Print observed class ids beside what they would mean under each scheme.
+
+    Settles the open question in CLAUDE.md: whether VEHICLE_CLASS_IDS
+    matches this model build. Where the model can name its own classes,
+    that is authoritative. Where it cannot, both COCO interpretations are
+    shown side by side and the ambiguity is stated rather than hidden --
+    you resolve it by looking at the footage and asking which column
+    describes what is actually on the road.
+    """
+    names = _model_class_names(model)
 
     print("\n--- class ids seen in the first {0} frame(s) ---".format(frames))
     if not counts:
-        print("  no detections at all -- lower --conf, or check the video")
-    for class_id, count in sorted(counts.items(), key=lambda item: -item[1]):
-        name = COCO_CLASSES.get(class_id, "<unknown>") if COCO_CLASSES else "<unknown>"
-        marker = "TRACKED" if class_id in VEHICLE_CLASS_IDS else "       "
-        print("  [{0}] id={1:<4} {2:<18} {3} detections".format(marker, class_id, name, count))
+        print("  NO DETECTIONS AT ALL -- lower --conf, or check the video.\n")
+        return
+
+    if names is not None:
+        print("  names come from the model itself\n")
+        print("  {0:<9} {1:<6} {2:<22} {3}".format("", "id", "name", "detections"))
+        for class_id, count in sorted(counts.items(), key=lambda item: -item[1]):
+            marker = "[TRACKED]" if class_id in VEHICLE_CLASS_IDS else "[       ]"
+            print("  {0} {1:<6} {2:<22} {3}".format(
+                marker, class_id, names.get(class_id, "?? not in model table"), count))
+    else:
+        print("  THIS MODEL BUILD DOES NOT EXPOSE ITS CLASS NAMES.")
+        print("  Both COCO schemes are shown. Decide which column matches what")
+        print("  is actually visible in the footage -- they disagree about every")
+        print("  vehicle, so guessing silently corrupts every alert downstream.\n")
+        print("  {0:<9} {1:<6} {2:<22} {3:<22} {4}".format(
+            "", "id", "if 91-class", "if 80-class", "detections"))
+        for class_id, count in sorted(counts.items(), key=lambda item: -item[1]):
+            marker = "[TRACKED]" if class_id in VEHICLE_CLASS_IDS else "[       ]"
+            print("  {0} {1:<6} {2:<22} {3:<22} {4}".format(
+                marker,
+                class_id,
+                COCO_91.get(class_id, "?"),
+                COCO_80.get(class_id, "?"),
+                count,
+            ))
+
     print(
-        "  VEHICLE_CLASS_IDS is currently {0} -- confirm the names above are\n"
-        "  the vehicles you meant before trusting any alert.\n".format(
+        "\n  VEHICLE_CLASS_IDS is {0} (car, motorcycle, bus, truck under the\n"
+        "  91-class scheme). If the names beside those ids are not those\n"
+        "  vehicles, fix the constant before trusting a single alert.\n".format(
             sorted(VEHICLE_CLASS_IDS)
         )
     )
@@ -144,11 +220,20 @@ def run(
     limit_frames: Optional[int] = None,
     probe_frames: int = 30,
     config: Optional[DetectorConfig] = None,
+    dump_tracks: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Run perception + the wrong-way module over a video file.
 
     Returns every alert produced, so a caller can assert on them. Alerts
     are also handed to `send_alert` as they happen.
+
+    `dump_tracks` writes the perception output -- one JSON line per frame,
+    holding each track's id, road-contact point and apparent width -- to a
+    file. That file is everything a violation module ever sees (principle
+    5), so `replay.py` can re-run the logic from it with no GPU, no model
+    and no video, in under a second. Use it whenever the thing being
+    debugged is the logic rather than the perception, which is most of the
+    time.
     """
     from trackers import ByteTrackTracker
 
@@ -190,6 +275,7 @@ def run(
     alerted_ids: Set[int] = set()
     alerts: List[Dict[str, Any]] = []
     frame_index = 0
+    dump = open(dump_tracks, "w", encoding="utf-8") if dump_tracks else None
 
     try:
         while True:
@@ -209,20 +295,30 @@ def run(
             if not reported and detections.class_id is not None:
                 class_counts.update(int(value) for value in detections.class_id)
                 if frame_index >= probe_frames:
-                    _report_class_ids(class_counts, frame_index)
+                    _report_class_ids(class_counts, frame_index, model)
                     reported = True
 
             if detections.class_id is not None and len(detections) > 0:
                 detections = detections[np.isin(detections.class_id, vehicle_ids)]
             tracked = tracker.update(detections)
 
+            frame_tracks: List[List[float]] = []
             if tracked.tracker_id is not None:
                 for xyxy, raw_id in zip(tracked.xyxy, tracked.tracker_id):
                     if raw_id is None or int(raw_id) < 0:
                         continue
                     track_id = int(raw_id)
                     anchor = _bottom_center(xyxy)
-                    alert = detector.update(track_id, anchor)
+                    # Apparent vehicle size. The detector needs it to tell a
+                    # vehicle that is genuinely crawling from one that only
+                    # looks slow because the ego car is following it.
+                    width = float(xyxy[2]) - float(xyxy[0])
+                    # Recorded before the detector sees it, and in feed
+                    # order, so a replay reproduces this run exactly.
+                    frame_tracks.append([track_id, anchor[0], anchor[1], width])
+                    alert = detector.update(
+                        track_id, anchor, frame=frame_index, scale=width
+                    )
                     if alert is not None:
                         alert["frame"] = frame_index
                         alerts.append(alert)
@@ -230,6 +326,11 @@ def run(
                         send_alert(alert)
                     if writer is not None:
                         _draw(frame, xyxy, track_id, anchor, track_id in alerted_ids)
+
+            if dump is not None:
+                dump.write(
+                    json.dumps({"frame": frame_index, "tracks": frame_tracks}) + "\n"
+                )
 
             if writer is not None:
                 writer.write(frame)
@@ -239,12 +340,19 @@ def run(
         capture.release()
         if writer is not None:
             writer.release()
+        if dump is not None:
+            dump.close()
 
     if not reported:
-        _report_class_ids(class_counts, frame_index)
+        _report_class_ids(class_counts, frame_index, model)
     print("Done: {0} frames, {1} alert(s).".format(frame_index, len(alerts)))
     if output is not None:
         print("Annotated video written to {0}".format(output))
+    if dump_tracks is not None:
+        print(
+            "Track data written to {0} -- replay it locally with:\n"
+            "    python replay.py {0}".format(dump_tracks)
+        )
     return alerts
 
 
@@ -268,6 +376,10 @@ def main() -> None:
         default=30,
         help="frames to sample before printing the class-id report",
     )
+    parser.add_argument(
+        "--dump-tracks",
+        help="write per-frame track data here, for replay.py to re-run offline",
+    )
     args = parser.parse_args()
 
     run(
@@ -277,6 +389,7 @@ def main() -> None:
         conf=args.conf,
         limit_frames=args.limit_frames,
         probe_frames=args.probe_frames,
+        dump_tracks=args.dump_tracks,
     )
 
 
