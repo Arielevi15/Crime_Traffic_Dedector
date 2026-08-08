@@ -7,9 +7,9 @@ Companion to `../CLAUDE.md` (the design contract) and `ARCHITECTURE.md`
 
 | Track | Owner | Deliverable |
 |---|---|---|
-| A | Ariel | Wrong-way module, finished and measured |
-| B | Partner | Stop-sign module, from scratch |
-| C | Both | Evaluation set + open questions |
+| A | Ariel | Red-light violation module |
+| B | Yuval | Stop-sign module, from scratch |
+| C | Yuval + Ariel | Evaluation set + open questions |
 
 The two tracks touch disjoint files by design (`CLAUDE.md` principle 5:
 one file per module, no shared base class). Merge conflicts should be
@@ -56,25 +56,34 @@ evidence the fix works and no protection against regression.
 
 **0.5 Never assume an ID.** Class ids, sign ids, light ids: print what
 the model actually emits and cross-check against the model's own names.
-This has already cost us once — see A1.
+This has already cost us once — see W1.
 
-**0.6 Branches.** `track-a/<topic>`, `track-b/<topic>`. `main` stays
-green: no merge unless every test passes. Both test files must pass, not
-just your own.
+**0.6 Branches.** Track B currently uses the existing
+`stop-sign-module` branch. New topic branches should follow
+`track-a/<topic>` or `track-b/<topic>`. `main` stays green: no merge
+unless every test passes. Both test files must pass, not just your own.
 
 **0.7 `CLAUDE.md` is the contract.** Changes to principles, payload
 shape or module boundaries need both owners. Changes to your own module's
 task list do not.
 
+**0.8 Integration files are shared surfaces.** Module logic and tests
+stay owner-specific, but `pipeline.py`, `run_on_colab.ipynb`, dependency
+files and the project documentation may be touched by both tracks. Keep
+such edits focused, call them out explicitly in the commit/PR, and have
+the other owner review them before merge. A push to a feature branch does
+not require the other owner to pull it; a pull request is the review and
+merge boundary.
+
 ---
 
-## Track A — Ariel: finish the wrong-way module
+## Existing foundation — wrong-way module
 
-The module works end to end but produced a false positive on its first
-real video. Everything below is about turning "it runs" into "we know
-what it does."
+This module is already integrated and is not Ariel's current Track A.
+The historical follow-up below remains useful project context and must be
+coordinated before either owner changes the module.
 
-### A1. Close the class-id question
+### W1. Close the class-id question
 
 **Problem.** The first run reported:
 
@@ -105,7 +114,7 @@ tracked by coincidence.
 matches them, and a video containing a truck shows that truck tracked.
 Record the finding in `CLAUDE.md` so the open task can be ticked.
 
-### A2. Diagnose the false positive
+### W2. Diagnose the false positive
 
 **Problem.** A vehicle changing lanes legally was flagged with confidence
 0.903, implying a mean cosine near -0.86 — roughly a 150° deviation. A
@@ -135,13 +144,13 @@ module's core premise needs revisiting.
 3. Extract frames around the alert and confirm visually what the vehicle
    and the ego camera were doing.
 4. Write the conclusion down — one paragraph, with the numbers that
-   support it. This is the input to A3, and guessing here poisons
+   support it. This is the input to W3, and guessing here poisons
    everything after it.
 
 **Done when.** A written root cause naming H1, H2, or something else,
 supported by evidence values from an actual run.
 
-### A3. Reproduce it synthetically
+### W3. Reproduce it synthetically
 
 Per rule 0.4. Before touching the fix.
 
@@ -154,9 +163,9 @@ Per rule 0.4. Before touching the fix.
 **Done when.** A new test in `test_wrong_way.py` fails, and fails for the
 diagnosed reason rather than by accident.
 
-### A4. Fix it
+### W4. Fix it
 
-Only now. Possible directions, to be chosen from A2's conclusion — do not
+Only now. Possible directions, to be chosen from W2's conclusion — do not
 pre-commit to one:
 
 - Larger zones, or zones keyed to something more stable than a pixel grid
@@ -167,10 +176,10 @@ pre-commit to one:
 - Restricting judgement to image regions where perspective distortion is
   least severe
 
-**Done when.** The A3 test passes, every other test still passes, and the
+**Done when.** The W3 test passes, every other test still passes, and the
 same clip no longer flags that vehicle.
 
-### A5. Tune against real footage
+### W5. Tune against real footage
 
 Blocked on Track C's evaluation set. Tuning without measurement is
 guessing.
@@ -187,7 +196,7 @@ left as-is deliberately, pending real measurement.
 **Done when.** Chosen values are recorded in `CLAUDE.md` with the
 measured FP/FN counts that justify them.
 
-### A6. Real alert delivery
+### W6. Real alert delivery
 
 `send_alert()` is still a `print`. Blocked on an API destination
 existing.
@@ -199,22 +208,84 @@ existing.
 
 ---
 
-## Track B — Partner: stop-sign module
+## Track A — Ariel: red-light violation module
 
-Fully independent of Track A. New files only: `stop_sign_detector.py` and
-`test_stop_sign.py`.
+Independent module files owned by Ariel. Stop-sign logic owned by Yuval
+must not be edited from this track. Changes to shared integration files
+follow rule 0.8.
+
+**Current status (2026-08-08):** assigned to Ariel; implementation has
+not been verified on the `stop-sign-module` branch.
+
+### R0. Confirm scope and class id
+
+- Detect traffic lights from the existing RF-DETR inference output.
+- Print and verify the exact class id against the model's own class names;
+  do not infer it from a generic COCO table.
+- Scope v1 to one relevant light and one lane of interest. Record this as
+  a known limitation rather than claiming general light-to-lane mapping.
+
+### R1. Determine the light state
+
+- Add a small secondary classifier or a documented colour heuristic on
+  the detected light crop: red, yellow or green.
+- Require the state to persist for several frames; a single-frame red
+  classification must never be enough to accuse a vehicle.
+
+### R2. Define the stop line and state machine
+
+- Use a manually configured stop-line coordinate for v1.
+- Track the light state when each vehicle crosses that line.
+- Emit an alert only when red was already sustained before the crossing.
+
+### R3. Synthetic tests
+
+- Sustained red followed by a crossing -> alert.
+- Crossing on green -> no alert.
+- Single-frame red flicker at the crossing -> no alert.
+- One crossing -> at most one alert for that vehicle/event.
+
+**Done when.** The pure-logic tests pass without a GPU, camera or model.
+
+### R4. Wire into the shared pipeline
+
+- Reuse the single RF-DETR call; never add another full-frame inference
+  pass.
+- Make shared-file changes small and clearly identified for Yuval's
+  review, especially in `pipeline.py` and `run_on_colab.ipynb`.
+- Draw the relevant light state and stop line in annotated output.
+
+### R5. Tune and measure
+
+Tune only against labelled real clips. When settings are close, choose
+the quieter one because false positives are more costly than misses.
+
+---
+
+## Track B — Yuval: stop-sign module
+
+Its core logic is independent of Track A. Owner-specific files are
+`stop_sign_detector.py` and `test_stop_sign.py`; integration may also
+require focused changes to the shared files listed in rule 0.8.
+
+**Current status (2026-08-08):** the `stop-sign-module` branch exists, is
+assigned to Yuval and has been brought up to date with `main`. No
+stop-sign implementation commit exists yet: `stop_sign_detector.py` and
+`test_stop_sign.py` have not been added, and the module has not been wired
+into `pipeline.py`. The current project baseline was verified locally
+with 17 wrong-way tests passing and 0 failing.
 
 ### B0. Onboarding
 
 Before writing anything:
 
-1. Read `../CLAUDE.md` end to end, then `ARCHITECTURE.md`.
-2. Clone and run the existing tests locally — no GPU needed:
-   `python test_wrong_way.py` → expect `11 passed, 0 failed`.
+1. [x] Read `../CLAUDE.md` end to end, then `ARCHITECTURE.md`.
+2. [x] Clone and run the existing tests locally — no GPU needed:
+   `python test_wrong_way.py` → current result: `17 passed, 0 failed`.
 3. Run `run_on_colab.ipynb` once on a GPU runtime, all the way to an
    annotated video. You need to have seen the pipeline work before you
    extend it.
-4. Read `wrong_way_detector.py`. It is the reference shape every module
+4. [x] Read `wrong_way_detector.py`. It is the reference shape every module
    follows: config dataclass → per-frame `update()` → state machine →
    alert dict. Diagram 3 in `ARCHITECTURE.md` walks its internal logic.
 
@@ -223,7 +294,7 @@ video yourself.
 
 ### B1. Confirm the STOP sign class id
 
-Same discipline as A1, and read A1 first — it exists because this step
+Same discipline as W1, and read W1 first — it exists because this step
 was skipped once already.
 
 - Print every class id RF-DETR emits on footage containing a stop sign
@@ -297,7 +368,7 @@ payload, with a populated `evidence` block.
 
 ### B5. Tune and measure
 
-Same as A5, on your own evaluation clips. Same rule: quieter wins ties.
+Same as R5, on your own evaluation clips. Same rule: quieter wins ties.
 
 ---
 
@@ -306,7 +377,7 @@ Same as A5, on your own evaluation clips. Same rule: quieter wins ties.
 ### C1. Evaluation set — the highest-value missing piece
 
 Right now "does it work" is decided by a human watching a video. That is
-neither measurable nor repeatable, and it makes A5 and B5 impossible to
+neither measurable nor repeatable, and it makes R5 and B5 impossible to
 do honestly.
 
 **Build:** 10-20 short clips (20-60s), each labelled by hand:
@@ -348,8 +419,9 @@ plates are blurred outside the flagged vehicle.
   pretrained model exists, this module needs labelled data and
   fine-tuning, which is a significant scope change. Finding that out now
   is worth more than finding it out in a month.
-- **Red light.** Hardest. Needs a colour-state classifier plus
-  light-to-lane association. Build last.
+- **Red light.** No longer deferred; it is Ariel's active Track A. Its
+  general light-to-lane association problem remains deliberately scoped
+  down for v1.
 - **Orchestration.** Blocked until two modules run together. Nothing to
   orchestrate with one.
 
@@ -358,20 +430,25 @@ plates are blurred outside the flagged vehicle.
 ## Sequencing
 
 ```
-Track A:  A1 → A2 → A3 → A4 → A5 → A6
-                              ↑
-Track C:  C1 (evaluation set) ┘
-                              ↓
-Track B:  B0 → B1 → B2 → B3 → B4 → B5
-                                    ↓
-                          Orchestration layer
+Foundation: wrong-way module already integrated
+
+Track A (Ariel): R0 → R1 → R2 → R3 → R4 → R5
+                                         ↑
+Track C (both):  C1 evaluation set ──────┤
+                                         ↓
+Track B (Yuval): B0 → B1 → B2 → B3 → B4 → B5
+
+Orchestration: eligible once at least two modules are integrated and verified
 ```
 
 - A and B run fully in parallel. Neither blocks the other.
 - C1 blocks the tuning steps of both. Start it early, not when you reach
-  A5 and discover you cannot proceed.
-- Orchestration is blocked on both A4 and B4.
-- Share the A1 finding with Track B immediately — B1 is the same trap.
+  R5 or B5 and discover you cannot proceed.
+- Because wrong-way is already integrated, B4 or R4 can make a second
+  live module available; orchestration still requires both owners to
+  agree that the participating modules are ready.
+- Share the W1 class-id finding across both tracks — B1 and R0 face the
+  same trap.
 
 ## Definition of done, per module
 
