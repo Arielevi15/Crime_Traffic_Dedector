@@ -47,7 +47,7 @@ is how a false positive survives to accuse the next driver.
 
 **0.3 Synthetic tests before real video, always.** Principle 6. A module
 without a passing `test_<name>.py` does not get wired into
-`pipeline.py`. Not "should not" — does not.
+`road_crime/pipeline.py`. Not "should not" — does not.
 
 **0.4 When reality contradicts the tests, write the test first.** If a
 real run produces a wrong result, reproduce it as a synthetic test that
@@ -95,7 +95,7 @@ tracked by coincidence.
 1. Run the diagnostic cell that imports `COCO_CLASSES` and prints ids 2-8
    with their names. If the import fails, find where the names actually
    live in this `rfdetr` build.
-2. Fix `_report_class_ids` in `pipeline.py` so it never silently degrades
+2. Fix `_report_class_ids` in `road_crime/pipeline.py` so it never silently degrades
    to `<unknown>`. If names cannot be resolved, it should say so loudly,
    not print a table that looks fine.
 3. Correct `VEHICLE_CLASS_IDS` to the verified ids.
@@ -151,7 +151,7 @@ Per rule 0.4. Before touching the fix.
   vehicles all travelling the same real direction, whose image-space
   headings differ by sign because of differing relative speed.
 
-**Done when.** A new test in `test_wrong_way.py` fails, and fails for the
+**Done when.** A new test in `tests/test_wrong_way.py` fails, and fails for the
 diagnosed reason rather than by accident.
 
 ### A4. Fix it
@@ -201,8 +201,8 @@ existing.
 
 ## Track B — Partner: stop-sign module
 
-Fully independent of Track A. New files only: `stop_sign_detector.py` and
-`test_stop_sign.py`.
+Fully independent of Track A. New files only: `road_crime/stop_sign_detector.py` and
+`tests/test_stop_sign.py`.
 
 ### B0. Onboarding
 
@@ -210,11 +210,11 @@ Before writing anything:
 
 1. Read `../CLAUDE.md` end to end, then `ARCHITECTURE.md`.
 2. Clone and run the existing tests locally — no GPU needed:
-   `python test_wrong_way.py` → expect `11 passed, 0 failed`.
-3. Run `run_on_colab.ipynb` once on a GPU runtime, all the way to an
+   `python -m tests.test_wrong_way` → expect `11 passed, 0 failed`.
+3. Run `notebooks/run_on_colab.ipynb` once on a GPU runtime, all the way to an
    annotated video. You need to have seen the pipeline work before you
    extend it.
-4. Read `wrong_way_detector.py`. It is the reference shape every module
+4. Read `road_crime/wrong_way_detector.py`. It is the reference shape every module
    follows: config dataclass → per-frame `update()` → state machine →
    alert dict. Diagram 3 in `ARCHITECTURE.md` walks its internal logic.
 
@@ -277,7 +277,7 @@ it. Duplication across modules is explicitly accepted at this stage
 Add at least one more: the same vehicle re-entering a zone it already
 cleared must not produce a second alert.
 
-**Done when.** `test_stop_sign.py` passes with no GPU, no video and no
+**Done when.** `tests/test_stop_sign.py` passes with no GPU, no video and no
 RF-DETR.
 
 ### B4. Wire into the pipeline
@@ -379,7 +379,7 @@ A module is finished when all of the following hold:
 
 1. Its own file, its own test file, no shared base class
 2. Synthetic tests pass with no GPU, camera or model
-3. Wired into `pipeline.py`, producing alerts on real video
+3. Wired into `road_crime/pipeline.py`, producing alerts on real video
 4. Alerts carry a populated, auditable `evidence` block
 5. Thresholds measured against the evaluation set, not guessed
 6. Assumptions and known limitations written in the module docstring

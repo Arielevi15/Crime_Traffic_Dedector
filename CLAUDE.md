@@ -32,13 +32,39 @@ Do not deviate from these without checking with the user first:
    raw video, never the model directly.
 6. **Pure logic before real video.** Every new module's core logic must
    ship with a synthetic-trajectory test (no camera, no GPU, no RF-DETR)
-   that proves correctness before it is wired into `pipeline.py`.
+   that proves correctness before it is wired into `road_crime/pipeline.py`.
 7. **Language:** all code, comments, docstrings, and this file: English.
 
-See `md/ARCHITECTURE.md` for Mermaid diagrams of the data flow, module
+## Layout
+
+```
+road_crime/    code: one file per violation module, plus the perception
+               and tooling that serve them
+tests/         synthetic-trajectory suites; no GPU, no footage
+fixtures/      recorded perception output, replayable forever
+notebooks/     Colab runners
+docs/          architecture and work plan
+CLAUDE.md      this file -- the design contract, at the root by convention
+```
+
+A plain package rather than role folders (`detectors/`, `tools/`), which
+would need a `sys.path` fix at the top of every file. Run everything from
+the repository root:
+
+```
+python -m tests.test_wrong_way
+python -m road_crime.replay fixtures/divided_highway_clean.jsonl
+python -m road_crime.evaluate fixtures/
+```
+
+There is deliberately no `pip install` step. `wrong_way_detector`,
+`replay` and the test suites are standard library only and must stay
+runnable on any laptop with nothing set up (principle 6).
+
+See `docs/ARCHITECTURE.md` for Mermaid diagrams of the data flow, module
 build order, and a worked internal-logic diagram of the wrong-way module.
 
-See `md/WORKPLAN.md` for who is building what, in what order, and the
+See `docs/WORKPLAN.md` for who is building what, in what order, and the
 acceptance criteria for each step. Two developers work in parallel:
 Track A finishes the wrong-way module, Track B builds the stop-sign
 module.
@@ -68,11 +94,14 @@ library (Roboflow), ByteTrack algorithm, Apache 2.0, detector-agnostic.
 
 | Component | Status |
 |---|---|
-| `wrong_way_detector.py` | Implemented. `DetectorConfig`, `DirectionBaseline`, `TrackState`, `WrongWayDetector`. **Produced a false positive on real video — see "What the first real run taught us".** |
-| `test_wrong_way.py` | **11 tests passing.** Synthetic trajectories, no GPU/video needed. Runs under pytest or standalone. |
-| `pipeline.py` | **Run successfully on GPU (Colab T4).** Full chain works end to end. Two defects found — class ids and the false positive. |
-| `run_on_colab.ipynb` | Working. Fetches code from GitHub, video from the `supervision` sample set or Drive. |
-| Stop-sign module | Not started — assigned to Track B, see `md/WORKPLAN.md`. |
+| `road_crime/wrong_way_detector.py` | Implemented. `DetectorConfig`, `DirectionBaseline`, `TrackState`, `WrongWayDetector`. **Produced a false positive on real video — see "What the first real run taught us".** |
+| `tests/test_wrong_way.py` | **17 tests passing.** Synthetic trajectories plus replayed real footage, no GPU/video needed. |
+| `road_crime/replay.py` | Re-runs violation logic from a recorded dump. No GPU, no model, no third-party imports. |
+| `road_crime/evaluate.py` | Scores the module over a corpus: false positives from unlabelled footage, sensitivity from injected violations. |
+| `road_crime/corpus.py` | Fetches clips from `url:`, `hf:`, `kaggle:` or a path, and turns them into dumps. |
+| `road_crime/pipeline.py` | **Run successfully on GPU (Colab T4).** Full chain works end to end. Two defects found — class ids and the false positive. |
+| `notebooks/run_on_colab.ipynb` | Working. Fetches code from GitHub, video from the `supervision` sample set or Drive. |
+| Stop-sign module | Not started — assigned to Track B, see `docs/WORKPLAN.md`. |
 | Solid/double line module | Not started. Open dependency unresolved. |
 | Red-light module | Not started. |
 | Orchestration layer | Not started — out of scope until 2+ modules are live. |
@@ -81,7 +110,7 @@ library (Roboflow), ByteTrack algorithm, Apache 2.0, detector-agnostic.
 
 GPU work runs on **Google Colab**, driven from VS Code via the official
 `google.colab` extension. The Colab runtime is a remote machine that
-cannot see the local disk, so `run_on_colab.ipynb` pulls the code from
+cannot see the local disk, so `notebooks/run_on_colab.ipynb` pulls the code from
 GitHub. **After every push, re-run the git cell** or the runtime keeps
 executing the previous version. Synthetic tests run locally with no GPU.
 
@@ -161,7 +190,7 @@ set, which is why it is Track C's blocker and not a quick edit.
   No shared base class yet — duplication across modules is acceptable at
   this stage; do not prematurely abstract.
 - Every violation module gets a matching `test_<violation_name>.py` with
-  synthetic-trajectory tests, following the pattern in `test_wrong_way.py`:
+  synthetic-trajectory tests, following the pattern in `tests/test_wrong_way.py`:
   build fake tracks frame-by-frame, assert on the returned alert dict.
 - Alert payload shape (keep consistent across all modules):
   ```python
@@ -185,7 +214,7 @@ set, which is why it is Track C's blocker and not a quick edit.
 ## Task list: wrong-way driving module
 
 **Status: runs end to end on real video; correctness not yet established.**
-Track A in `md/WORKPLAN.md` owns the remaining work.
+Track A in `docs/WORKPLAN.md` owns the remaining work.
 
 - [x] `DetectorConfig` dataclass with tunable thresholds
 - [x] `DirectionBaseline` — self-calibrating per-zone direction learner
@@ -196,7 +225,7 @@ Track A in `md/WORKPLAN.md` owns the remaining work.
       flagged after baseline is trusted, no false alarms during warm-up,
       no duplicate alerts for an already-reported track
 - [x] Every alert carries an auditable `evidence` block
-- [x] Run `pipeline.py` against real video on a GPU — done, Colab T4.
+- [x] Run `road_crime/pipeline.py` against real video on a GPU — done, Colab T4.
       `_report_class_ids` prints observed ids over the first N frames
 - [ ] **Finish the class-id verification.** The report ran but printed
       `<unknown>` for every name, so the cross-check never happened. Fix
