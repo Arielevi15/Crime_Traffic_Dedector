@@ -1,4 +1,4 @@
-"""Wires the perception stack to the violation modules.
+﻿"""Wires the perception stack to the violation modules.
 
 This is the only file in the system that touches video, a model, or a GPU.
 Everything downstream of it -- the wrong-way and stop-sign detectors today,
@@ -9,9 +9,9 @@ Perception runs exactly once per frame and its output fans out to every
 violation module (principle 5). No module may call the detector itself.
 
 Usage:
-    python pipeline.py --video dashcam.mp4 --output annotated.mp4
-    python pipeline.py --video dashcam.mp4 --limit-frames 300
-    python pipeline.py --video dashcam.mp4 --modules all
+    python -m road_crime.pipeline --video dashcam.mp4 --output annotated.mp4
+    python -m road_crime.pipeline --video dashcam.mp4 --limit-frames 300
+    python -m road_crime.pipeline --video dashcam.mp4 --modules all
 """
 
 import argparse
@@ -23,8 +23,8 @@ from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 import cv2
 import numpy as np
 
-from wrong_way_detector import DetectorConfig, WrongWayDetector
-from stop_sign_detector import (
+from road_crime.wrong_way_detector import DetectorConfig, WrongWayDetector
+from road_crime.stop_sign_detector import (
     StopSignConfig,
     StopSignDetector,
     StopSignTracker,
@@ -480,7 +480,7 @@ def run(
     if dump_tracks is not None:
         print(
             "Track data written to {0} -- replay it locally with:\n"
-            "    python replay.py {0}".format(dump_tracks)
+            "    python -m road_crime.replay {0}".format(dump_tracks)
         )
     return alerts
 

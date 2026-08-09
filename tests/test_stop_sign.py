@@ -1,13 +1,24 @@
-"""Synthetic, GPU-free tests for :mod:`stop_sign_detector`.
+"""Synthetic, GPU-free tests for :mod:`road_crime.stop_sign_detector`.
 
-Runs under pytest or standalone with ``python test_stop_sign.py``.
+Run from the repository root, either way:
+
+    python -m tests.test_stop_sign
+    pytest tests/test_stop_sign.py
 """
 
 import json
 import math
+import os
+import sys
 from typing import Dict, Iterable, List, Tuple
 
-from stop_sign_detector import (
+# Running this file directly puts tests/ on the path rather than the
+# repository root, so the package would not be importable. Three lines
+# here keep `python tests/test_stop_sign.py` working, which matters: the
+# suite is meant to run on any laptop with nothing installed.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from road_crime.stop_sign_detector import (  # noqa: E402
     DetectorConfig,
     StopSignConfig,
     StopSignDetector,
