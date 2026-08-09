@@ -1,8 +1,8 @@
 ﻿"""Wires the perception stack to the violation modules.
 
 This is the only file in the system that touches video, a model, or a GPU.
-Everything downstream of it -- `wrong_way_detector.py` today, the stop-sign
-and red-light modules later -- consumes structured track data and stays
+Everything downstream of it -- the wrong-way and stop-sign detectors today,
+and the red-light module later -- consumes structured track data and stays
 testable with no camera and no footage (CLAUDE.md principle 6).
 
 Perception runs exactly once per frame and its output fans out to every
@@ -11,6 +11,7 @@ violation module (principle 5). No module may call the detector itself.
 Usage:
     python -m road_crime.pipeline --video dashcam.mp4 --output annotated.mp4
     python -m road_crime.pipeline --video dashcam.mp4 --limit-frames 300
+    python -m road_crime.pipeline --video dashcam.mp4 --modules all
 """
 
 import argparse
@@ -23,6 +24,12 @@ import cv2
 import numpy as np
 
 from road_crime.wrong_way_detector import DetectorConfig, WrongWayDetector
+from road_crime.stop_sign_detector import (
+    StopSignConfig,
+    StopSignDetector,
+    StopSignTracker,
+    StopZone,
+)
 
 # COCO has two numbering schemes and they disagree about every vehicle.
 # The 80-class contiguous scheme is what most YOLO code uses; the 91-class
@@ -56,6 +63,11 @@ COCO_91 = {
 # quiet when it cannot resolve a name.
 VEHICLE_CLASS_IDS = {3, 4, 6, 8}
 
+# Stop sign under RF-DETR's 91-class COCO scheme. Keep this independent of
+# VEHICLE_CLASS_IDS: the same prediction is split after inference and fans out
+# to the vehicle tracker and the stop-sign tracker.
+STOP_SIGN_CLASS_IDS = {13}
+
 # "base" and "large" still load, but rfdetr deprecated them in v1.7.0 and
 # will drop them in v2.0.0, so the default below is a current one.
 MODEL_VARIANTS = {
@@ -70,6 +82,9 @@ DEFAULT_VARIANT = "medium"
 BOX_COLOR = (0, 200, 0)
 ALERT_COLOR = (0, 0, 255)
 ANCHOR_COLOR = (255, 200, 0)
+STOP_ZONE_COLOR = (0, 165, 255)
+
+AVAILABLE_MODULES = {"wrong_way", "stop_sign"}
 
 
 def send_alert(alert: Dict[str, Any]) -> None:
@@ -109,6 +124,8 @@ def _model_class_names(model: Any) -> Optional[Dict[int, str]]:
     single silent fallback is why the wrong class ids survived two runs.
     """
     for module_path, attribute in (
+        ("rfdetr.assets.coco_classes", "COCO_CLASSES"),
+        ("rfdetr.assets.coco_classes", "COCO_CLASS_NAMES"),
         ("rfdetr.util.coco_classes", "COCO_CLASSES"),
         ("rfdetr.util.coco_classes", "COCO_CLASSES_91"),
     ):
@@ -199,17 +216,68 @@ def _draw(
     xyxy: Sequence[float],
     track_id: int,
     anchor: Tuple[float, float],
-    alerted: bool,
+    wrong_way_alerted: bool,
+    stop_sign_alerted: bool = False,
 ) -> None:
     """Annotate one tracked vehicle, including its road-contact anchor."""
     x1, y1, x2, y2 = (int(value) for value in xyxy)
+    alerted = wrong_way_alerted or stop_sign_alerted
     color = ALERT_COLOR if alerted else BOX_COLOR
     cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-    label = "WRONG WAY #{0}".format(track_id) if alerted else "#{0}".format(track_id)
+    violations: List[str] = []
+    if wrong_way_alerted:
+        violations.append("WRONG WAY")
+    if stop_sign_alerted:
+        violations.append("STOP SIGN")
+    label = (
+        " + ".join(violations) + " #{0}".format(track_id)
+        if violations
+        else "#{0}".format(track_id)
+    )
     cv2.putText(
         frame, label, (x1, max(14, y1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2
     )
     cv2.circle(frame, (int(anchor[0]), int(anchor[1])), 3, ANCHOR_COLOR, -1)
+
+
+def _draw_stop_zone(
+    frame: "np.ndarray", sign_id: int, zone: StopZone
+) -> None:
+    """Draw the image-space region in which vehicles must stop."""
+    x1, y1, x2, y2 = (
+        int(zone.x1),
+        int(zone.y1),
+        int(zone.x2),
+        int(zone.y2),
+    )
+    cv2.rectangle(frame, (x1, y1), (x2, y2), STOP_ZONE_COLOR, 2)
+    cv2.putText(
+        frame,
+        "STOP ZONE #{0}".format(sign_id),
+        (x1, max(14, y1 - 6)),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.5,
+        STOP_ZONE_COLOR,
+        2,
+    )
+
+
+def _selected_modules(modules: Sequence[str]) -> Set[str]:
+    """Validate module names and expand ``all`` to the live modules."""
+    requested = {modules} if isinstance(modules, str) else set(modules)
+    allowed = AVAILABLE_MODULES | {"all"}
+    invalid = requested - allowed
+    if invalid:
+        raise ValueError(
+            "Unknown module(s): {0}. Choose from: {1}".format(
+                ", ".join(sorted(invalid)), ", ".join(sorted(allowed))
+            )
+        )
+    if not requested:
+        raise ValueError("At least one module must be selected")
+    if "all" in requested:
+        return set(AVAILABLE_MODULES)
+    return requested
 
 
 def run(
@@ -221,11 +289,15 @@ def run(
     probe_frames: int = 30,
     config: Optional[DetectorConfig] = None,
     dump_tracks: Optional[str] = None,
+    stop_sign_config: Optional[StopSignConfig] = None,
+    modules: Sequence[str] = ("wrong_way",),
 ) -> List[Dict[str, Any]]:
-    """Run perception + the wrong-way module over a video file.
+    """Run shared perception and the selected violation modules over a video.
 
     Returns every alert produced, so a caller can assert on them. Alerts
-    are also handed to `send_alert` as they happen.
+    are also handed to `send_alert` as they happen. The wrong-way module is
+    the backwards-compatible default; pass ``modules=("all",)`` to run both
+    live modules from the same perception output.
 
     `dump_tracks` writes the perception output -- one JSON line per frame,
     holding each track's id, road-contact point and apparent width -- to a
@@ -236,6 +308,8 @@ def run(
     time.
     """
     from trackers import ByteTrackTracker
+
+    selected_modules = _selected_modules(modules)
 
     # Check the path before loading a model, so a typo costs a second
     # rather than a weight download.
@@ -248,7 +322,15 @@ def run(
 
     model = _load_model(variant)
     tracker = ByteTrackTracker()
-    detector = WrongWayDetector(config)
+    wrong_way_detector = (
+        WrongWayDetector(config) if "wrong_way" in selected_modules else None
+    )
+    stop_sign_detector = (
+        StopSignDetector(stop_sign_config) if "stop_sign" in selected_modules else None
+    )
+    stop_sign_tracker = (
+        StopSignTracker(stop_sign_config) if "stop_sign" in selected_modules else None
+    )
 
     capture = cv2.VideoCapture(video)
     if not capture.isOpened():
@@ -270,9 +352,11 @@ def run(
         )
 
     vehicle_ids = np.array(sorted(VEHICLE_CLASS_IDS))
+    stop_sign_ids = np.array(sorted(STOP_SIGN_CLASS_IDS))
     class_counts: Counter = Counter()
     reported = False
-    alerted_ids: Set[int] = set()
+    wrong_way_alerted_ids: Set[int] = set()
+    stop_sign_alerted_ids: Set[int] = set()
     alerts: List[Dict[str, Any]] = []
     frame_index = 0
     dump = open(dump_tracks, "w", encoding="utf-8") if dump_tracks else None
@@ -298,9 +382,37 @@ def run(
                     _report_class_ids(class_counts, frame_index, model)
                     reported = True
 
+            stop_sign_bboxes: List[Tuple[float, float, float, float]] = []
+            vehicle_detections = detections
             if detections.class_id is not None and len(detections) > 0:
-                detections = detections[np.isin(detections.class_id, vehicle_ids)]
-            tracked = tracker.update(detections)
+                vehicle_detections = detections[
+                    np.isin(detections.class_id, vehicle_ids)
+                ]
+                if stop_sign_tracker is not None:
+                    sign_detections = detections[
+                        np.isin(detections.class_id, stop_sign_ids)
+                    ]
+                    stop_sign_bboxes = [
+                        tuple(float(value) for value in xyxy)
+                        for xyxy in sign_detections.xyxy
+                    ]
+
+            # This update is deliberately unconditional while the module is
+            # enabled. Empty frames let the sign tracker age its retained
+            # identities instead of freezing their state during dropouts.
+            stable_signs = (
+                stop_sign_tracker.update(stop_sign_bboxes)
+                if stop_sign_tracker is not None
+                else {}
+            )
+            tracked = tracker.update(vehicle_detections)
+
+            if writer is not None and stop_sign_detector is not None:
+                for sign_id, sign_bbox in stable_signs.items():
+                    zone = StopZone.from_sign_bbox(
+                        sign_bbox, stop_sign_detector.config
+                    )
+                    _draw_stop_zone(frame, sign_id, zone)
 
             frame_tracks: List[List[float]] = []
             if tracked.tracker_id is not None:
@@ -316,16 +428,33 @@ def run(
                     # Recorded before the detector sees it, and in feed
                     # order, so a replay reproduces this run exactly.
                     frame_tracks.append([track_id, anchor[0], anchor[1], width])
-                    alert = detector.update(
-                        track_id, anchor, frame=frame_index, scale=width
-                    )
-                    if alert is not None:
-                        alert["frame"] = frame_index
-                        alerts.append(alert)
-                        alerted_ids.add(track_id)
-                        send_alert(alert)
+                    if wrong_way_detector is not None:
+                        wrong_way_alert = wrong_way_detector.update(
+                            track_id, anchor, frame=frame_index, scale=width
+                        )
+                        if wrong_way_alert is not None:
+                            wrong_way_alert["frame"] = frame_index
+                            alerts.append(wrong_way_alert)
+                            wrong_way_alerted_ids.add(track_id)
+                            send_alert(wrong_way_alert)
+                    if stop_sign_detector is not None:
+                        stop_sign_alert = stop_sign_detector.update(
+                            track_id, anchor, stable_signs
+                        )
+                        if stop_sign_alert is not None:
+                            stop_sign_alert["frame"] = frame_index
+                            alerts.append(stop_sign_alert)
+                            stop_sign_alerted_ids.add(track_id)
+                            send_alert(stop_sign_alert)
                     if writer is not None:
-                        _draw(frame, xyxy, track_id, anchor, track_id in alerted_ids)
+                        _draw(
+                            frame,
+                            xyxy,
+                            track_id,
+                            anchor,
+                            track_id in wrong_way_alerted_ids,
+                            track_id in stop_sign_alerted_ids,
+                        )
 
             if dump is not None:
                 dump.write(
@@ -380,6 +509,13 @@ def main() -> None:
         "--dump-tracks",
         help="write per-frame track data here, for replay.py to re-run offline",
     )
+    parser.add_argument(
+        "--modules",
+        nargs="+",
+        default=("wrong_way",),
+        choices=sorted(AVAILABLE_MODULES | {"all"}),
+        help="violation modules to run (default: wrong_way; use all for both)",
+    )
     args = parser.parse_args()
 
     run(
@@ -390,6 +526,7 @@ def main() -> None:
         limit_frames=args.limit_frames,
         probe_frames=args.probe_frames,
         dump_tracks=args.dump_tracks,
+        modules=args.modules,
     )
 
 

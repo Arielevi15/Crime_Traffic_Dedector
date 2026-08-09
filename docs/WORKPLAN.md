@@ -8,8 +8,8 @@ Companion to `../CLAUDE.md` (the design contract) and `ARCHITECTURE.md`
 | Track | Owner | Deliverable |
 |---|---|---|
 | A | Ariel | Wrong-way module, finished and measured |
-| B | Partner | Stop-sign module, from scratch |
-| C | Both | Evaluation set + open questions |
+| B | Yuval | Stop-sign module, from scratch |
+| C | Yuval + Ariel | Evaluation set + open questions |
 
 The two tracks touch disjoint files by design (`CLAUDE.md` principle 5:
 one file per module, no shared base class). Merge conflicts should be
@@ -58,9 +58,10 @@ evidence the fix works and no protection against regression.
 the model actually emits and cross-check against the model's own names.
 This has already cost us once — see A1.
 
-**0.6 Branches.** `track-a/<topic>`, `track-b/<topic>`. `main` stays
-green: no merge unless every test passes. Both test files must pass, not
-just your own.
+**0.6 Branches.** Track B currently uses the existing
+`stop-sign-module` branch. New topic branches should follow
+`track-a/<topic>` or `track-b/<topic>`. `main` stays green: no merge
+unless every test passes. Both test files must pass, not just your own.
 
 ---
 
@@ -124,6 +125,14 @@ within the first afternoon of threshold work.
 **0.7 `CLAUDE.md` is the contract.** Changes to principles, payload
 shape or module boundaries need both owners. Changes to your own module's
 task list do not.
+
+**0.8 Integration files are shared surfaces.** Module logic and tests
+stay owner-specific, but `pipeline.py`, `run_on_colab.ipynb`, dependency
+files and the project documentation may be touched by both tracks. Keep
+such edits focused, call them out explicitly in the commit/PR, and have
+the other owner review them before merge. A push to a feature branch does
+not require the other owner to pull it; a pull request is the review and
+merge boundary.
 
 ---
 
@@ -258,19 +267,31 @@ existing.
 
 ---
 
-## Track B — Partner: stop-sign module
+## Track B — Yuval: stop-sign module
 
-Fully independent of Track A. New files only: `road_crime/stop_sign_detector.py` and
-`tests/test_stop_sign.py`.
+Fully independent of Track A. Owner-specific files are
+`road_crime/stop_sign_detector.py` and `tests/test_stop_sign.py`.
+
+**Current status.** Both are in, along with a separate
+`notebooks/run_stop_sign_on_colab.ipynb` runner, and the module is wired
+into the shared single-pass inference in `road_crime/pipeline.py`. The
+installed RF-DETR mapping was checked and uses sparse COCO ids:
+`13 = stop sign`, `11 = fire hydrant`.
+
+Still pending, and the module is not complete without them: a real
+stop-sign footage run, visual acceptance, threshold tuning, and measured
+evaluation over a corpus. Note that the last of those is blocked on the
+known gap above -- the track dump records vehicles only, so `replay.py`
+and `evaluate.py` cannot see stop signs yet.
 
 ### B0. Onboarding
 
 Before writing anything:
 
-1. Read `../CLAUDE.md` end to end, then `ARCHITECTURE.md`, then the
+1. [x] Read `../CLAUDE.md` end to end, then `ARCHITECTURE.md`, then the
    tooling section above — it is what stops you repeating Track A's
    slowest week.
-2. Clone and run the existing tests locally — no GPU needed:
+2. [x] Clone and run the existing tests locally — no GPU needed:
    `python -m tests.test_wrong_way` → expect `17 passed, 0 failed`.
 3. Replay a recorded run, also with no GPU:
    `python -m road_crime.replay fixtures/divided_highway_clean.jsonl`
@@ -280,7 +301,7 @@ Before writing anything:
 4. Run `notebooks/run_on_colab.ipynb` once on a GPU runtime, all the way
    to an annotated video. You need to have seen the pipeline work before
    you extend it — but note that this is the *only* step that needs a GPU.
-5. Read `road_crime/wrong_way_detector.py`. It is the reference shape every module
+5. [x] Read `road_crime/wrong_way_detector.py`. It is the reference shape every module
    follows: config dataclass → per-frame `update()` → state machine →
    alert dict. Diagram 3 in `ARCHITECTURE.md` walks its internal logic.
    The `evidence` block and the peer-agreement rule both exist because of
@@ -294,13 +315,20 @@ produced one annotated video yourself.
 Same discipline as A1, and read A1 first — it exists because this step
 was skipped once already.
 
-- Print every class id RF-DETR emits on footage containing a stop sign
-- Cross-check against the model's own class names
-- Hardcode nothing until the name is confirmed
+- [x] Cross-check the installed RF-DETR class mapping: it uses sparse COCO
+  ids, with `13 = stop sign` and `11 = fire hydrant`.
+- [ ] Print every class id RF-DETR emits on real footage containing a stop
+  sign and confirm that id 13 is present.
+- [ ] Record the real-footage confirmation before treating B1 as fully
+  accepted end to end.
 
-**Done when.** The id is documented alongside the name the model gives it.
+**Current result.** The model mapping is verified; footage confirmation is
+still pending. **Done when.** Id 13 is also observed on real stop-sign
+footage and documented alongside the model name.
 
 ### B2. Define the stop zone
+
+**Status: complete in code.**
 
 A region in image space in front of a detected sign where a vehicle is
 expected to reach near-zero speed.
@@ -315,6 +343,10 @@ they can be tuned rather than rediscovered.
 any code depends on them.
 
 ### B3. Core logic and synthetic tests
+
+**Status: complete.** The implementation and canonical pure-Python
+regression suite `test_stop_sign.py` are present; they require no GPU,
+video or RF-DETR.
 
 Write the tests alongside the logic, not after.
 
@@ -352,20 +384,26 @@ RF-DETR.
 
 Only after B3 is green.
 
-- Stop signs are detected in the same `model.predict` call as vehicles —
+- [x] Stop signs are detected in the same `model.predict` call as vehicles —
   do not add a second inference pass. Perception runs once per frame
   (principle 5) and its output fans out.
-- Feed the module structured data only, exactly as `WrongWayDetector` is
+- [x] Feed the module structured data only, exactly as `WrongWayDetector` is
   fed.
-- Extend the annotated output so stop zones are drawn — you cannot tune a
+- [x] Add a separate `run_stop_sign_on_colab.ipynb` runner for the stop-sign
+  path. This has not yet been run to completion on real stop-sign footage.
+- [x] Extend the annotated output so stop zones are drawn — you cannot tune a
   zone you cannot see.
+- [ ] Run the integrated path on real stop-sign footage and inspect the
+  annotated output and alert evidence.
 
-**Done when.** A real video produces stop-sign alerts in the standard
-payload, with a populated `evidence` block.
+**Current result.** The code is wired, but real-video acceptance remains
+pending. **Done when.** A real video produces stop-sign alerts in the
+standard payload, with a populated `evidence` block.
 
 ### B5. Tune and measure
 
-Same as A5, on your own evaluation clips. Same rule: quieter wins ties.
+**Status: pending.** Same as A5, on your own evaluation clips. Same rule:
+quieter wins ties.
 
 ---
 
@@ -426,20 +464,20 @@ plates are blurred outside the flagged vehicle.
 ## Sequencing
 
 ```
-Track A:  A1 → A2 → A3 → A4 → A5 → A6
-                              ↑
-Track C:  C1 (evaluation set) ┘
-                              ↓
-Track B:  B0 → B1 → B2 → B3 → B4 → B5
-                                    ↓
-                          Orchestration layer
+Track A (Ariel): A1 → A2 → A3 → A4 → A5 → A6
+                                         ↑
+Track C (both):  C1 evaluation set ──────┤
+                                         ↓
+Track B (Yuval): B0 → B1 → B2 → B3 → B4 → B5
+                                               ↓
+                                     Orchestration layer
 ```
 
 - A and B run fully in parallel. Neither blocks the other.
 - C1 blocks the tuning steps of both. Start it early, not when you reach
-  A5 and discover you cannot proceed.
+  A5 or B5 and discover you cannot proceed.
 - Orchestration is blocked on both A4 and B4.
-- Share the A1 finding with Track B immediately — B1 is the same trap.
+- Share the A1 class-id finding with Track B — B1 faces the same trap.
 
 ## Definition of done, per module
 

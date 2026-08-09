@@ -96,12 +96,15 @@ library (Roboflow), ByteTrack algorithm, Apache 2.0, detector-agnostic.
 |---|---|
 | `road_crime/wrong_way_detector.py` | Implemented. `DetectorConfig`, `DirectionBaseline`, `TrackState`, `WrongWayDetector`. **Produced a false positive on real video — see "What the first real run taught us".** |
 | `tests/test_wrong_way.py` | **17 tests passing.** Synthetic trajectories plus replayed real footage, no GPU/video needed. |
+| `road_crime/stop_sign_detector.py` | Implemented. Stop-zone heuristic, per-vehicle/sign state, evidence payload and duplicate-evaluation guard are in place. Real stop-sign footage validation and tuning are still pending. |
+| `tests/test_stop_sign.py` | **16 tests passing.** Pure-Python regression suite; no GPU, video or RF-DETR required. |
 | `road_crime/replay.py` | Re-runs violation logic from a recorded dump. No GPU, no model, no third-party imports. |
-| `road_crime/evaluate.py` | Scores the module over a corpus: false positives from unlabelled footage, sensitivity from injected violations. |
+| `road_crime/evaluate.py` | Scores a module over a corpus: false positives from unlabelled footage, sensitivity from injected violations. Wrong-way only so far. |
 | `road_crime/corpus.py` | Fetches clips from `url:`, `hf:`, `kaggle:` or a path, and turns them into dumps. |
-| `road_crime/pipeline.py` | **Run successfully on GPU (Colab T4).** Full chain works end to end. Two defects found — class ids and the false positive. |
+| `road_crime/pipeline.py` | **Wrong-way path run successfully on GPU (Colab T4).** Stop-sign detection is wired into the same single-pass inference, but has not yet passed real stop-sign video acceptance. |
 | `notebooks/run_on_colab.ipynb` | Working. Fetches code from GitHub, video from the `supervision` sample set or Drive. |
-| Stop-sign module | Not started — assigned to Track B, see `docs/WORKPLAN.md`. |
+| `notebooks/run_stop_sign_on_colab.ipynb` | Separate stop-sign runner. Its existence does not imply that a full real-footage run has completed. |
+| Stop-sign module | Implemented and synthetically tested; pipeline integration wired. Real footage validation, threshold tuning and measured acceptance remain pending. |
 | Solid/double line module | Not started. Open dependency unresolved. |
 | Red-light module | Not started. |
 | Orchestration layer | Not started — out of scope until 2+ modules are live. |
@@ -243,37 +246,45 @@ Track A in `docs/WORKPLAN.md` owns the remaining work.
 
 ## Task list: stop-sign violation module
 
-**Status: not started.** Create `stop_sign_detector.py` +
-`test_stop_sign.py`.
+**Status: implementation and pure-Python regression tests added; wired
+into the pipeline, but not yet validated or tuned on real stop-sign
+footage.** The canonical test filename is `test_stop_sign.py`.
 
-- [ ] Confirm the STOP sign class ID in RF-DETR's output (COCO includes
-      "stop sign" as a standard class — verify the exact ID the same way
-      as the wrong-way module's `VEHICLE_CLASS_IDS`, do not hardcode
-      without checking)
-- [ ] Define a "stop zone": a small region in image space directly in
+- [x] Verify the installed RF-DETR class mapping: it uses sparse COCO ids,
+      with `13 = stop sign` and `11 = fire hydrant`. This corrects the
+      contiguous-map assumption that would label id 11 as a stop sign.
+- [ ] Confirm id 13 is actually emitted on real footage containing a stop
+      sign before treating the mapping check as end-to-end validation
+- [x] Define a "stop zone": a small region in image space directly in
       front of a detected stop sign, where a vehicle is expected to reach
       near-zero speed. Start with a simple heuristic (e.g. a fixed-size
       box below the sign's bounding box) — this does not need to be
       perfect for v1, just documented as a config-level assumption
-- [ ] Reuse the heading/speed calculation pattern from
+- [x] Reuse the heading/speed calculation pattern from
       `WrongWayDetector._heading()` to compute a tracked vehicle's speed
       while its position falls inside a stop zone
-- [ ] Track, per `(track_id, stop_sign_id)` pair, the minimum speed
+- [x] Track, per `(track_id, stop_sign_id)` pair, the minimum speed
       observed while inside the zone
-- [ ] Violation condition: vehicle passes fully through the zone without
+- [x] Violation condition: vehicle passes fully through the zone without
       the minimum recorded speed dropping below a near-zero threshold for
       at least N consecutive frames (mirror `violation_frames_required`
       from wrong-way module for consistency)
-- [ ] Guard against double-counting: once a `(track_id, stop_sign_id)`
+- [x] Guard against double-counting: once a `(track_id, stop_sign_id)`
       pair has been evaluated (vehicle has exited the zone), do not
       re-evaluate it again even if the same vehicle re-enters the frame
-- [ ] Synthetic tests:
-  - [ ] Vehicle that decelerates to ~0 inside the zone -> no alert
-  - [ ] Vehicle that maintains speed through the zone -> alert fires
-  - [ ] Vehicle that never enters any stop zone -> detector never even
+- [x] Pure-Python synthetic regression tests in `test_stop_sign.py`:
+  - [x] Vehicle that decelerates to ~0 inside the zone -> no alert
+  - [x] Vehicle that maintains speed through the zone -> alert fires
+  - [x] Vehicle that never enters any stop zone -> detector never even
         evaluates it (no crash, no false alert)
-  - [ ] Vehicle that slows down but not close enough to zero -> alert
+  - [x] Vehicle that slows down but not close enough to zero -> alert
         fires (partial stops still count as violations)
+- [x] Wire the detector into the shared `pipeline.py` perception pass and
+      add the separate `run_stop_sign_on_colab.ipynb` runner
+- [ ] Run the stop-sign path end to end on real footage, inspect the
+      annotated result and verify standard alerts with populated evidence
+- [ ] Tune thresholds and measure false positives/false negatives on a
+      labelled stop-sign evaluation set
 
 ---
 
