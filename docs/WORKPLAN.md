@@ -47,7 +47,7 @@ is how a false positive survives to accuse the next driver.
 
 **0.3 Synthetic tests before real video, always.** Principle 6. A module
 without a passing `test_<name>.py` does not get wired into
-`pipeline.py`. Not "should not" — does not.
+`road_crime/pipeline.py`. Not "should not" — does not.
 
 **0.4 When reality contradicts the tests, write the test first.** If a
 real run produces a wrong result, reproduce it as a synthetic test that
@@ -61,6 +61,65 @@ This has already cost us once — see A1.
 **0.6 Branches.** `track-a/<topic>`, `track-b/<topic>`. `main` stays
 green: no merge unless every test passes. Both test files must pass, not
 just your own.
+
+---
+
+## The tooling, and why you should not iterate through Colab
+
+This section did not exist when the plan was written. It is the single
+biggest time saver in the repository, and it was built because Track A
+spent hours per bug going the slow way.
+
+**The problem.** Debugging logic through the notebook costs minutes per
+attempt: edit, push, pull on the runtime, reload the model, decode video.
+Most of that pays for perception, which is almost never what is broken.
+
+**The insight.** A violation module only ever sees structured track data
+(principle 5). That is a few hundred kilobytes per clip. So record it
+once, and everything downstream replays from it with no GPU, no model, no
+video and no third-party imports, in well under a second, on a laptop.
+
+```
+python -m road_crime.pipeline --video clip.mp4 --dump-tracks clip.jsonl   # once, on Colab
+python -m road_crime.replay clip.jsonl                                    # forever, locally
+python -m road_crime.replay clip.jsonl --track 7 --verbose                # why did THAT fire
+python -m road_crime.evaluate fixtures/                                   # score the corpus
+```
+
+**`fixtures/`** holds those recordings, committed, so a bug stays
+reproducible for as long as the repository exists and reaches the other
+developer through `git pull`. Two of them are named regressions: a
+false-positive case and a clean divided-highway run.
+
+**`road_crime/corpus.py`** fetches clips from `url:`, `hf:`, `kaggle:` or
+a path and turns them into dumps, so nobody downloads video by hand.
+
+**`road_crime/evaluate.py`** scores a whole corpus without any labelling.
+Ordinary driving contains no violations to any useful approximation, so
+every alert raised on it is a false positive; sensitivity comes from
+replaying real trajectories backwards. The two combine into one
+deliberately asymmetric number, which is principle 3 written as
+arithmetic:
+
+```
+loss = 10 * false_positives + missed_injections
+```
+
+**0.7 Tune against the corpus, never against one clip.** Fitting
+thresholds to a single video is how you get numbers that look perfect and
+break on the next road. If a change does not move the loss over
+`fixtures/`, you do not know that it helped.
+
+### Known gap, and Track B's cheapest big win
+
+**The dump records vehicles only** — id, road-contact point, width. It
+does not record stop signs, so none of the above works for the stop-sign
+module yet. Extending `dump_tracks` to carry sign boxes, and teaching
+`evaluate.py` to score stop-sign alerts, would hand Track B the same
+second-long iteration loop that Track A has.
+
+Do that before tuning anything. It is a small change that pays for itself
+within the first afternoon of threshold work.
 
 **0.7 `CLAUDE.md` is the contract.** Changes to principles, payload
 shape or module boundaries need both owners. Changes to your own module's
@@ -95,7 +154,7 @@ tracked by coincidence.
 1. Run the diagnostic cell that imports `COCO_CLASSES` and prints ids 2-8
    with their names. If the import fails, find where the names actually
    live in this `rfdetr` build.
-2. Fix `_report_class_ids` in `pipeline.py` so it never silently degrades
+2. Fix `_report_class_ids` in `road_crime/pipeline.py` so it never silently degrades
    to `<unknown>`. If names cannot be resolved, it should say so loudly,
    not print a table that looks fine.
 3. Correct `VEHICLE_CLASS_IDS` to the verified ids.
@@ -151,7 +210,7 @@ Per rule 0.4. Before touching the fix.
   vehicles all travelling the same real direction, whose image-space
   headings differ by sign because of differing relative speed.
 
-**Done when.** A new test in `test_wrong_way.py` fails, and fails for the
+**Done when.** A new test in `tests/test_wrong_way.py` fails, and fails for the
 diagnosed reason rather than by accident.
 
 ### A4. Fix it
@@ -201,25 +260,34 @@ existing.
 
 ## Track B — Partner: stop-sign module
 
-Fully independent of Track A. New files only: `stop_sign_detector.py` and
-`test_stop_sign.py`.
+Fully independent of Track A. New files only: `road_crime/stop_sign_detector.py` and
+`tests/test_stop_sign.py`.
 
 ### B0. Onboarding
 
 Before writing anything:
 
-1. Read `../CLAUDE.md` end to end, then `ARCHITECTURE.md`.
+1. Read `../CLAUDE.md` end to end, then `ARCHITECTURE.md`, then the
+   tooling section above — it is what stops you repeating Track A's
+   slowest week.
 2. Clone and run the existing tests locally — no GPU needed:
-   `python test_wrong_way.py` → expect `11 passed, 0 failed`.
-3. Run `run_on_colab.ipynb` once on a GPU runtime, all the way to an
-   annotated video. You need to have seen the pipeline work before you
-   extend it.
-4. Read `wrong_way_detector.py`. It is the reference shape every module
+   `python -m tests.test_wrong_way` → expect `17 passed, 0 failed`.
+3. Replay a recorded run, also with no GPU:
+   `python -m road_crime.replay fixtures/divided_highway_clean.jsonl`
+   → 825 frames, 50 tracks, 0 alerts. Then
+   `python -m road_crime.evaluate fixtures/` for the corpus score. Seeing
+   how fast this is, is the point.
+4. Run `notebooks/run_on_colab.ipynb` once on a GPU runtime, all the way
+   to an annotated video. You need to have seen the pipeline work before
+   you extend it — but note that this is the *only* step that needs a GPU.
+5. Read `road_crime/wrong_way_detector.py`. It is the reference shape every module
    follows: config dataclass → per-frame `update()` → state machine →
    alert dict. Diagram 3 in `ARCHITECTURE.md` walks its internal logic.
+   The `evidence` block and the peer-agreement rule both exist because of
+   specific false positives on real footage; `CLAUDE.md` records which.
 
-**Done when.** Tests pass locally and you have produced one annotated
-video yourself.
+**Done when.** Tests pass locally, a fixture replays locally, and you have
+produced one annotated video yourself.
 
 ### B1. Confirm the STOP sign class id
 
@@ -277,7 +345,7 @@ it. Duplication across modules is explicitly accepted at this stage
 Add at least one more: the same vehicle re-entering a zone it already
 cleared must not produce a second alert.
 
-**Done when.** `test_stop_sign.py` passes with no GPU, no video and no
+**Done when.** `tests/test_stop_sign.py` passes with no GPU, no video and no
 RF-DETR.
 
 ### B4. Wire into the pipeline
@@ -379,7 +447,7 @@ A module is finished when all of the following hold:
 
 1. Its own file, its own test file, no shared base class
 2. Synthetic tests pass with no GPU, camera or model
-3. Wired into `pipeline.py`, producing alerts on real video
+3. Wired into `road_crime/pipeline.py`, producing alerts on real video
 4. Alerts carry a populated, auditable `evidence` block
 5. Thresholds measured against the evaluation set, not guessed
 6. Assumptions and known limitations written in the module docstring

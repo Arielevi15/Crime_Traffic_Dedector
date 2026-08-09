@@ -1,6 +1,6 @@
-"""Re-run violation logic over cached perception output.
+﻿"""Re-run violation logic over cached perception output.
 
-`pipeline.py --dump-tracks` records what the modules actually consume:
+`python -m road_crime.pipeline --dump-tracks` records what the modules actually consume:
 per frame, each track's id and road-contact point. That is the whole
 input surface a violation module has (CLAUDE.md principle 5), so
 everything downstream of perception can be reproduced from it exactly --
@@ -12,9 +12,9 @@ decode video). Replaying the same run costs well under a second, and runs
 on a laptop. When the thing being debugged is the logic rather than the
 perception -- which is nearly always -- use this.
 
-    python replay.py tracks.jsonl
-    python replay.py tracks.jsonl --zone-size 240
-    python replay.py tracks.jsonl --track 16 --verbose
+    python -m road_crime.replay tracks.jsonl
+    python -m road_crime.replay tracks.jsonl --zone-size 240
+    python -m road_crime.replay tracks.jsonl --track 16 --verbose
 
 `--verbose` with `--track` prints that vehicle's per-frame decision trail,
 which is the fastest way to see why one specific alert fired.
@@ -24,7 +24,7 @@ import argparse
 import json
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
-from wrong_way_detector import DetectorConfig, WrongWayDetector
+from road_crime.wrong_way_detector import DetectorConfig, WrongWayDetector
 
 Track = Tuple[int, float, float, Optional[float]]
 Frame = Tuple[int, List[Track]]

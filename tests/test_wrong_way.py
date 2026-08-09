@@ -1,22 +1,53 @@
-"""Synthetic-trajectory tests for the wrong-way module.
+﻿"""Synthetic-trajectory tests for the wrong-way module.
 
 No camera, no GPU, no RF-DETR (CLAUDE.md principle 6). Every test builds
 fake tracks frame by frame and asserts on the returned alert dict, so the
 whole file runs in milliseconds on any machine.
 
-Runs under pytest, or standalone with ``python test_wrong_way.py``.
+Run from the repository root, either way:
+
+    python -m tests.test_wrong_way
+    pytest tests/test_wrong_way.py
 
 Geometry note: the default ``zone_size`` is 120, so every trajectory below
 is kept inside the single zone (0, 0) -- x and y in [0, 120) -- to keep
 the baseline learning in one place and the reasoning easy to follow.
 """
-#Yuval was here!
+
 import os
+import sys
 from collections import deque
 from typing import Dict, List, Sequence, Tuple
 
-from replay import load
-from wrong_way_detector import (
+# Running this file directly puts tests/ on the path rather than the
+# repository root, so the package would not be importable. Three lines
+# here keep `python tests/test_wrong_way.py` working, which matters: the
+# suite is meant to run on any laptop with nothing installed.
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO_ROOT)
+
+FIXTURES = os.path.join(REPO_ROOT, "fixtures")
+
+
+def _fixture(name: str) -> str:
+    """Locate a recorded run, and refuse to pretend it is optional.
+
+    These used to skip silently when the file was missing. That is the
+    failure mode this project has been bitten by twice: a check that
+    degrades quietly reports success while testing nothing. The fixtures
+    are committed, so absence means the layout moved under us and the
+    suite should say so.
+    """
+    path = os.path.join(FIXTURES, name)
+    assert os.path.isfile(path), (
+        "Missing fixture {0}.\nLooked in {1}. Fixtures are committed to the "
+        "repository; if this fails the path resolution is wrong, not the "
+        "data.".format(name, FIXTURES)
+    )
+    return path
+
+from road_crime.replay import load  # noqa: E402
+from road_crime.wrong_way_detector import (  # noqa: E402
     DetectorConfig,
     DirectionBaseline,
     TrackState,
@@ -347,13 +378,7 @@ def test_real_footage_flow_reversal_regression() -> None:
     the evaluation set, where it can be measured across many clips instead
     of fitted to this one.
     """
-    fixture = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        "fixtures",
-        "flow_reversal_false_positive.jsonl",
-    )
-    if not os.path.isfile(fixture):
-        return  # fixture not checked out; nothing to assert
+    fixture = _fixture("flow_reversal_false_positive.jsonl")
 
     detector = WrongWayDetector()
     flagged = set()
@@ -380,13 +405,7 @@ def test_real_footage_divided_highway_stays_silent() -> None:
     Most motorways are divided, and a detector that flags lawful oncoming
     traffic is worthless on all of them.
     """
-    fixture = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        "fixtures",
-        "divided_highway_clean.jsonl",
-    )
-    if not os.path.isfile(fixture):
-        return
+    fixture = _fixture("divided_highway_clean.jsonl")
 
     detector = WrongWayDetector()
     alerts = []

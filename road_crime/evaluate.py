@@ -1,4 +1,4 @@
-"""Score the wrong-way module over a corpus of track dumps.
+﻿"""Score the wrong-way module over a corpus of track dumps.
 
 Until now "does it work" meant a person watching a video. That is neither
 measurable nor repeatable, and it makes threshold tuning guesswork:
@@ -17,9 +17,9 @@ backwards is a vehicle travelling against its own lane, at a realistic
 speed and in a real scene. Injecting those measures sensitivity without
 waiting years for a genuine wrong-way event to be filmed.
 
-    python evaluate.py fixtures/
-    python evaluate.py fixtures/ --zone-size 240 --baseline-min-samples 15
-    python evaluate.py fixtures/ --json          # for a tuner to parse
+    python -m road_crime.evaluate fixtures/
+    python -m road_crime.evaluate fixtures/ --zone-size 240 --baseline-min-samples 15
+    python -m road_crime.evaluate fixtures/ --json          # for a tuner to parse
 
 The single score is deliberately asymmetric:
 
@@ -37,8 +37,8 @@ import os
 from math import hypot
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from replay import Track, load
-from wrong_way_detector import DetectorConfig, WrongWayDetector
+from road_crime.replay import Track, load
+from road_crime.wrong_way_detector import DetectorConfig, WrongWayDetector
 
 HEADING_WINDOW_FOR_RANKING = 8
 GHOST_ID = 999_000
