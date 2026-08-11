@@ -22,7 +22,8 @@ where they can be replayed for free forever and shared through git.
 For measuring false positives none of these sources needs labels. Ordinary
 driving footage contains no wrong-way driving to any useful approximation,
 so every alert raised on it is one we should not have raised. Positives
-come from `inject.py` instead, which turns real trajectories around.
+come from the injection pass in `evaluate.py`, which replays a real
+trajectory backwards.
 """
 
 import os
@@ -215,7 +216,7 @@ def build_dumps(
     batch. Corpus building runs unattended over many clips, and one
     unreadable file should not cost the other forty.
     """
-    from pipeline import run
+    from road_crime.pipeline import run
 
     os.makedirs(out_dir, exist_ok=True)
     results: Dict[str, Optional[str]] = {}
