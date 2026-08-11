@@ -18,6 +18,7 @@ import argparse
 import json
 import os
 from collections import Counter
+from dataclasses import replace
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 import cv2
@@ -262,6 +263,57 @@ def _draw_stop_zone(
     )
 
 
+def _resolve_ego_corridor(
+    stop_sign_config: Optional[StopSignConfig],
+    frame_width: float,
+    fraction: Optional[float],
+) -> Optional[StopSignConfig]:
+    """Turn a fraction of frame width into the detector's pixel corridor.
+
+    The detector deliberately knows nothing about frames (principle 5), so
+    the conversion belongs here, where the video is. An explicit corridor
+    already on the config wins: a caller that measured its own bounds should
+    not have them overwritten by a convenience fraction.
+    """
+    if fraction is None:
+        return stop_sign_config
+    if not 0.0 < fraction <= 1.0:
+        raise ValueError(
+            "ego_corridor_fraction must be within (0, 1]; got {0}".format(fraction)
+        )
+    if not frame_width or frame_width <= 0:
+        raise RuntimeError(
+            "Could not read a frame width from the video, so ego_corridor_fraction "
+            "cannot be converted to pixels. Pass ego_corridor_center_x and "
+            "ego_corridor_half_width_px on the config instead."
+        )
+
+    resolved = stop_sign_config if stop_sign_config is not None else StopSignConfig()
+    if (
+        resolved.ego_corridor_center_x is not None
+        and resolved.ego_corridor_half_width_px is not None
+    ):
+        return resolved
+
+    # Centred horizontally: a forward dashcam is mounted looking down its own
+    # lane, so image centre is the closest thing to that lane we have without
+    # lane detection. Documented v1 assumption, same class as the stop zone.
+    corridor = replace(
+        resolved,
+        ego_corridor_center_x=frame_width / 2.0,
+        ego_corridor_half_width_px=frame_width * fraction / 2.0,
+    )
+    print(
+        "Ego corridor: x in [{0:.0f}, {1:.0f}] of {2:.0f}px wide frame "
+        "-- vehicles outside it are not judged.".format(
+            corridor.ego_corridor_center_x - corridor.ego_corridor_half_width_px,
+            corridor.ego_corridor_center_x + corridor.ego_corridor_half_width_px,
+            frame_width,
+        )
+    )
+    return corridor
+
+
 def _selected_modules(modules: Sequence[str]) -> Set[str]:
     """Validate module names and expand ``all`` to the live modules."""
     requested = {modules} if isinstance(modules, str) else set(modules)
@@ -291,6 +343,7 @@ def run(
     dump_tracks: Optional[str] = None,
     stop_sign_config: Optional[StopSignConfig] = None,
     modules: Sequence[str] = ("wrong_way",),
+    ego_corridor_fraction: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
     """Run shared perception and the selected violation modules over a video.
 
@@ -306,6 +359,12 @@ def run(
     and no video, in under a second. Use it whenever the thing being
     debugged is the logic rather than the perception, which is most of the
     time.
+
+    `ego_corridor_fraction` restricts stop-sign judgement to that fraction of
+    the frame width, centred, standing in for the ego vehicle's own
+    carriageway. It matters once the stop zone is wide enough to reach the
+    road: the same width also covers the crossing road, whose vehicles obey a
+    sign turned away from this camera. See `StopSignConfig`.
     """
     from trackers import ByteTrackTracker
 
@@ -325,12 +384,6 @@ def run(
     wrong_way_detector = (
         WrongWayDetector(config) if "wrong_way" in selected_modules else None
     )
-    stop_sign_detector = (
-        StopSignDetector(stop_sign_config) if "stop_sign" in selected_modules else None
-    )
-    stop_sign_tracker = (
-        StopSignTracker(stop_sign_config) if "stop_sign" in selected_modules else None
-    )
 
     capture = cv2.VideoCapture(video)
     if not capture.isOpened():
@@ -338,6 +391,20 @@ def run(
             "OpenCV could not open {0}. The file exists but the codec may be "
             "unsupported -- try re-encoding to H.264 mp4.".format(video)
         )
+
+    # Resolved here, after the capture is open, because the corridor is a
+    # fraction of this clip's width and the detector only speaks pixels.
+    stop_sign_config = _resolve_ego_corridor(
+        stop_sign_config,
+        frame_width=capture.get(cv2.CAP_PROP_FRAME_WIDTH),
+        fraction=ego_corridor_fraction,
+    )
+    stop_sign_detector = (
+        StopSignDetector(stop_sign_config) if "stop_sign" in selected_modules else None
+    )
+    stop_sign_tracker = (
+        StopSignTracker(stop_sign_config) if "stop_sign" in selected_modules else None
+    )
 
     writer: Optional[Any] = None
     if output is not None:
@@ -516,6 +583,14 @@ def main() -> None:
         choices=sorted(AVAILABLE_MODULES | {"all"}),
         help="violation modules to run (default: wrong_way; use all for both)",
     )
+    parser.add_argument(
+        "--ego-corridor-fraction",
+        type=float,
+        help=(
+            "judge stop signs only for vehicles within this centred fraction of "
+            "the frame width, approximating our own carriageway (e.g. 0.4)"
+        ),
+    )
     args = parser.parse_args()
 
     run(
@@ -527,6 +602,7 @@ def main() -> None:
         probe_frames=args.probe_frames,
         dump_tracks=args.dump_tracks,
         modules=args.modules,
+        ego_corridor_fraction=args.ego_corridor_fraction,
     )
 
 
