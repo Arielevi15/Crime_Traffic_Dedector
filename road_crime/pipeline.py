@@ -263,6 +263,46 @@ def _draw_stop_zone(
     )
 
 
+def _report_stop_sign_summary(summary: Dict[str, Any]) -> None:
+    """Print what became of every vehicle the stop-sign module saw.
+
+    Zero alerts is the module's most common result and its least readable
+    one. This turns it into an account: whether any vehicle reached a zone,
+    and if it did, which condition ended its visit. Read this before
+    concluding anything from a silent run -- silence because every driver
+    stopped and silence because no zone was ever reached look identical
+    without it, and they want opposite fixes.
+    """
+    outcomes = summary.get("outcomes") or {}
+    print("\n--- stop-sign module: what happened to each vehicle ---")
+    print("  vehicles tracked:            {0}".format(summary["vehicles_seen"]))
+    print("  distinct signs tracked:      {0}".format(summary["signs_ever_seen"]))
+    print(
+        "  vehicles that entered a zone: {0}".format(
+            summary["vehicles_that_entered_a_zone"]
+        )
+    )
+    if not outcomes:
+        print("  no visit ever closed, so nothing was judged either way")
+    for name, count in sorted(outcomes.items(), key=lambda item: -item[1]):
+        print("    {0:<22} {1}".format(name, count))
+    if summary["visits_never_closed"]:
+        print(
+            "  still inside a zone when the clip ended: {0} "
+            "(never judged)".format(summary["visits_never_closed"])
+        )
+    if summary["frames_skipped_by_corridor"]:
+        print(
+            "  frames inside a zone but outside the ego corridor: {0} "
+            "(excluded on purpose)".format(summary["frames_skipped_by_corridor"])
+        )
+    print(
+        "\n  Reading it: 'stopped' means a full stop was measured and no\n"
+        "  violation occurred. 'visit_too_short' and 'no_full_speed_window'\n"
+        "  mean the module declined to judge, not that the driver complied.\n"
+    )
+
+
 def _resolve_ego_corridor(
     stop_sign_config: Optional[StopSignConfig],
     frame_width: float,
@@ -542,6 +582,8 @@ def run(
     if not reported:
         _report_class_ids(class_counts, frame_index, model)
     print("Done: {0} frames, {1} alert(s).".format(frame_index, len(alerts)))
+    if stop_sign_detector is not None:
+        _report_stop_sign_summary(stop_sign_detector.summary())
     if output is not None:
         print("Annotated video written to {0}".format(output))
     if dump_tracks is not None:

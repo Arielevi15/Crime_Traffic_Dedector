@@ -19,7 +19,7 @@ visit therefore clears an earlier period of faster motion.
 from collections import deque
 from dataclasses import dataclass, field
 from math import hypot, isfinite
-from typing import Any, Deque, Dict, Optional, Sequence, Tuple
+from typing import Any, Deque, Dict, Optional, Sequence, Set, Tuple
 
 ALERT_TYPE = "stop_sign_violation"
 
@@ -284,6 +284,12 @@ class _ZoneEvalState:
     inside_positions: Deque[Position] = field(default_factory=deque)
     has_full_window_sample: bool = False
 
+    # Which branch closed this visit. Silence is the module's most common
+    # output and, without this, its least informative: "no alert" alone
+    # cannot distinguish a driver who stopped from a visit too short to
+    # measure. Set once, when the visit closes.
+    outcome: Optional[str] = None
+
 
 @dataclass
 class TrackState:
@@ -297,6 +303,12 @@ class StopSignDetector:
     def __init__(self, config: Optional[StopSignConfig] = None) -> None:
         self.config = config if config is not None else StopSignConfig()
         self.tracks: Dict[int, TrackState] = {}
+        # Observations the zone state cannot hold, because they are about
+        # vehicles that never got a state at all. Counted per frame, not per
+        # vehicle: the useful question is whether the corridor is doing
+        # anything, and at what volume.
+        self.corridor_skipped_frames = 0
+        self.signs_ever_seen: Set[int] = set()
 
     def update(
         self,
@@ -327,8 +339,12 @@ class StopSignDetector:
         alert_to_return: Optional[Dict[str, Any]] = None
         for raw_sign_id, raw_sign_bbox in stop_signs.items():
             sign_id = int(raw_sign_id)
+            self.signs_ever_seen.add(sign_id)
             zone = StopZone.from_sign_bbox(raw_sign_bbox, self.config)
-            inside = zone.contains(current_position) and in_corridor
+            in_zone = zone.contains(current_position)
+            if in_zone and not in_corridor:
+                self.corridor_skipped_frames += 1
+            inside = in_zone and in_corridor
             state = track.evaluations.get(sign_id)
 
             # Merely seeing a sign must not allocate per-zone evaluation state.
@@ -363,15 +379,21 @@ class StopSignDetector:
             # enough evidence to report, preventing later double-counting.
             state.evaluated = True
             if state.frames_in_zone < self.config.violation_frames_required:
+                state.outcome = "visit_too_short"
                 continue
             if not state.has_full_window_sample:
+                state.outcome = "no_full_speed_window"
                 continue
             if state.min_speed_px is None or not isfinite(state.min_speed_px):
+                state.outcome = "no_speed_sample"
                 continue
             if state.min_speed_px <= self.config.max_stop_speed_px:
+                state.outcome = "stopped"
                 continue
             if state.last_zone_bbox is None:  # Defensive; entry sets this.
+                state.outcome = "no_zone_recorded"
                 continue
+            state.outcome = "reported"
 
             if alert_to_return is None:
                 alert_to_return = self._alert(
@@ -379,6 +401,41 @@ class StopSignDetector:
                 )
 
         return alert_to_return
+
+    def summary(self) -> Dict[str, Any]:
+        """Account for every vehicle the module saw, reported or not.
+
+        Silence is this module's usual output, and on its own it is
+        ambiguous: a clip with no alerts looks identical whether every
+        driver stopped, no vehicle ever reached a zone, or the corridor
+        excluded them all. Those want different fixes, so the counts that
+        separate them are worth keeping even though no alert depends on
+        them. `outcomes` covers closed visits; the rest covers vehicles
+        that never got that far.
+        """
+
+        outcomes: Dict[str, int] = {}
+        open_visits = 0
+        vehicles_with_a_visit = 0
+        for track in self.tracks.values():
+            if track.evaluations:
+                vehicles_with_a_visit += 1
+            for state in track.evaluations.values():
+                if state.outcome is None:
+                    open_visits += 1
+                    continue
+                outcomes[state.outcome] = outcomes.get(state.outcome, 0) + 1
+
+        return {
+            "vehicles_seen": len(self.tracks),
+            "vehicles_that_entered_a_zone": vehicles_with_a_visit,
+            "signs_ever_seen": len(self.signs_ever_seen),
+            "outcomes": outcomes,
+            # A visit still open when the clip ended: the vehicle was inside a
+            # zone on the last frame it was tracked, so it was never judged.
+            "visits_never_closed": open_visits,
+            "frames_skipped_by_corridor": self.corridor_skipped_frames,
+        }
 
     def _in_ego_corridor(self, position: Position) -> bool:
         """Whether a position sits in the carriageway we are entitled to judge.

@@ -318,6 +318,45 @@ def test_corridor_is_off_by_default() -> None:
     assert len(_feed(half_only, 24, _line(140.0, 16.0, 12, y=70.0))) == 1
 
 
+def test_summary_separates_a_stop_from_a_refusal_to_judge() -> None:
+    """Zero alerts must not read the same for compliance and for silence."""
+
+    detector = StopSignDetector(_fast_config())
+
+    # Stopped inside the zone: judged, and cleared.
+    stopped = _line(20.0, 4.0, 4) + [(32.0, 70.0)] * 6 + [(80.0, 70.0)]
+    assert _feed(detector, 30, stopped) == []
+
+    # In and straight back out: too short to measure, so never judged.
+    assert _feed(detector, 31, [(30.0, 70.0), (34.0, 70.0), (80.0, 70.0)]) == []
+
+    summary = detector.summary()
+    assert summary["vehicles_seen"] == 2
+    assert summary["vehicles_that_entered_a_zone"] == 2
+    assert summary["outcomes"]["stopped"] == 1
+    assert summary["outcomes"]["visit_too_short"] == 1
+    assert "reported" not in summary["outcomes"]
+
+
+def test_summary_counts_corridor_exclusions_and_open_visits() -> None:
+    config = _fast_config(
+        zone_width_scale=10.0,
+        ego_corridor_center_x=160.0,
+        ego_corridor_half_width_px=40.0,
+    )
+    detector = StopSignDetector(config)
+
+    # Inside the zone throughout, but never in the corridor: no state, and
+    # every one of those frames is accounted for as excluded.
+    assert _feed(detector, 32, _line(-60.0, 4.0, 10, y=70.0)) == []
+    assert detector.summary()["frames_skipped_by_corridor"] == 10
+    assert detector.summary()["vehicles_that_entered_a_zone"] == 0
+
+    # Enters and is still inside when the feed ends: never judged, and said so.
+    assert _feed(detector, 33, _line(140.0, 2.0, 10, y=70.0)) == []
+    assert detector.summary()["visits_never_closed"] == 1
+
+
 if __name__ == "__main__":
     import traceback
 
