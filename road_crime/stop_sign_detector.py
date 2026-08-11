@@ -49,6 +49,22 @@ class StopSignConfig:
     tracker_max_center_distance_px: float = 40.0
     tracker_max_missed_frames: int = 2
 
+    # Restricts judgement to a vertical corridor of image space, intended to
+    # cover the ego vehicle's own carriageway. Both bounds are required; with
+    # either left unset the filter is off and every vehicle inside a zone is
+    # judged, which is the behaviour every earlier config had.
+    #
+    # Why it exists: a zone wide enough to reach our own carriageway also
+    # sweeps in the crossing road. Vehicles there answer to a sign whose back
+    # faces this camera, and COCO's "stop sign" class is trained on the red
+    # face, not the blank rear -- so their obligation is unreadable, and
+    # accusing them would be a guess (principles 3 and 4).
+    #
+    # In pixels rather than a frame fraction, so the module stays pure
+    # geometry with no notion of a frame; `pipeline.run` converts.
+    ego_corridor_center_x: Optional[float] = None
+    ego_corridor_half_width_px: Optional[float] = None
+
     def __post_init__(self) -> None:
         positive_floats = {
             "zone_below_scale": self.zone_below_scale,
@@ -81,6 +97,18 @@ class StopSignConfig:
             )
         if self.tracker_max_missed_frames < 0:
             raise ValueError("tracker_max_missed_frames must be non-negative")
+
+        if self.ego_corridor_center_x is not None and not isfinite(
+            self.ego_corridor_center_x
+        ):
+            raise ValueError("ego_corridor_center_x must be finite")
+        if self.ego_corridor_half_width_px is not None and (
+            not isfinite(self.ego_corridor_half_width_px)
+            or self.ego_corridor_half_width_px <= 0.0
+        ):
+            raise ValueError(
+                "ego_corridor_half_width_px must be finite and greater than zero"
+            )
 
 
 # The notebook and early integration code imported this name.  It is an alias,
@@ -290,11 +318,17 @@ class StopSignDetector:
             self.tracks[vehicle_id] = track
         track.positions.append(current_position)
 
+        # Treated as part of being "inside": a vehicle that leaves the
+        # corridor while still within the zone has left the traffic this
+        # sign's face governs, so its visit closes there rather than
+        # continuing to accumulate speed samples from the crossing road.
+        in_corridor = self._in_ego_corridor(current_position)
+
         alert_to_return: Optional[Dict[str, Any]] = None
         for raw_sign_id, raw_sign_bbox in stop_signs.items():
             sign_id = int(raw_sign_id)
             zone = StopZone.from_sign_bbox(raw_sign_bbox, self.config)
-            inside = zone.contains(current_position)
+            inside = zone.contains(current_position) and in_corridor
             state = track.evaluations.get(sign_id)
 
             # Merely seeing a sign must not allocate per-zone evaluation state.
@@ -345,6 +379,18 @@ class StopSignDetector:
                 )
 
         return alert_to_return
+
+    def _in_ego_corridor(self, position: Position) -> bool:
+        """Whether a position sits in the carriageway we are entitled to judge.
+
+        Unset bounds mean no corridor, so every position qualifies.
+        """
+
+        center = self.config.ego_corridor_center_x
+        half_width = self.config.ego_corridor_half_width_px
+        if center is None or half_width is None:
+            return True
+        return abs(position[0] - center) <= half_width
 
     def _zone_speed(
         self, state: _ZoneEvalState

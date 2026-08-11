@@ -236,6 +236,88 @@ def test_detector_config_is_a_compatibility_alias() -> None:
     assert DetectorConfig is StopSignConfig
 
 
+# --- What the first real stop-sign footage exposed --------------------------
+#
+# A DMV driving-test dashcam clip, run on a Colab T4. RF-DETR found the
+# signs (id 13, names confirmed) and the chain ran clean, yet a vehicle that
+# visibly crossed without stopping produced no alert. Two separate causes,
+# one test each below.
+
+
+def test_narrow_default_zone_misses_the_roadway_beside_the_sign() -> None:
+    """The default zone is too narrow to cover where vehicles actually drive.
+
+    A sign stands on the verge, so a box `zone_width_scale` wide centred on
+    it lands on the kerb and pavement. The traffic it governs crosses the
+    stop line *beside* the sign, and at default width is never judged at
+    all -- which is what the real clip showed.
+    """
+
+    # Fast enough to leave a 10x zone within the run, so the visit closes
+    # and can be judged at all.
+    on_the_roadway = _line(140.0, 16.0, 12, y=70.0)
+
+    narrow = StopSignDetector(_fast_config())
+    assert _feed(narrow, 20, on_the_roadway) == []
+    assert narrow.tracks[20].evaluations == {}
+
+    # Widening the span is enough to reach the carriageway: the same pass is
+    # now judged, and reported, because it never slows down.
+    wide = StopSignDetector(_fast_config(zone_width_scale=10.0))
+    alerts = _feed(wide, 21, on_the_roadway)
+    assert len(alerts) == 1
+    assert alerts[0]["evidence"]["min_speed_px"] > 1.0
+
+
+def test_vehicle_outside_the_ego_corridor_is_never_judged() -> None:
+    """A wide zone must not start accusing cross traffic.
+
+    Widening the zone to reach our own carriageway also sweeps in vehicles
+    on the crossing road. Those obey a sign whose back faces this camera,
+    which RF-DETR cannot read, so their obligation is unknown and judging
+    them would be a guess (principle 3, and principle 4's ban on verdicts).
+    """
+
+    config = _fast_config(
+        zone_width_scale=10.0,
+        ego_corridor_center_x=160.0,
+        ego_corridor_half_width_px=40.0,
+    )
+    detector = StopSignDetector(config)
+
+    # Inside the wide zone horizontally, but far outside our corridor.
+    assert _feed(detector, 22, _line(-60.0, 4.0, 12, y=70.0)) == []
+    assert detector.tracks[22].evaluations == {}
+
+
+def test_vehicle_inside_the_ego_corridor_is_still_judged() -> None:
+    """The corridor must not silence the case the module exists for."""
+
+    config = _fast_config(
+        zone_width_scale=10.0,
+        ego_corridor_center_x=160.0,
+        ego_corridor_half_width_px=40.0,
+    )
+    detector = StopSignDetector(config)
+
+    # Crosses the corridor's far edge, which closes the visit and judges it.
+    alerts = _feed(detector, 23, _line(140.0, 8.0, 12, y=70.0))
+    assert len(alerts) == 1
+    assert alerts[0]["track_id"] == 23
+
+
+def test_corridor_is_off_by_default() -> None:
+    """Both corridor bounds are needed; either alone changes nothing."""
+
+    assert StopSignConfig().ego_corridor_center_x is None
+    assert StopSignConfig().ego_corridor_half_width_px is None
+
+    half_only = StopSignDetector(
+        _fast_config(zone_width_scale=10.0, ego_corridor_half_width_px=40.0)
+    )
+    assert len(_feed(half_only, 24, _line(140.0, 16.0, 12, y=70.0))) == 1
+
+
 if __name__ == "__main__":
     import traceback
 
