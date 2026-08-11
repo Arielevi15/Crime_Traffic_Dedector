@@ -303,10 +303,7 @@ class WrongWayDetector:
         if heading is None:
             return None
         unit_x, unit_y, speed = heading
-        if scale is not None and scale > 0.0:
-            required_speed = self.config.min_speed_fraction * scale
-        else:
-            required_speed = self.config.min_speed_px
+        required_speed = self.required_speed(scale)
         if speed < required_speed:
             return None
 
@@ -389,6 +386,27 @@ class WrongWayDetector:
                 "peer_cosine": None if peer_cosine is None else round(peer_cosine, 4),
             },
         }
+
+    def required_speed(self, scale: Optional[float]) -> float:
+        """Minimum image-space speed for this vehicle's heading to be believed.
+
+        Public because `diagnose.py` has to ask the same question the
+        detector asks, and a second copy of this arithmetic would drift
+        away from the original without anything failing -- the same reason
+        `replay._trace` reads detector state instead of recomputing it.
+
+        Note what the fraction does to an approaching vehicle: `scale` is
+        the bounding-box width, which grows as the vehicle closes, so the
+        bar rises exactly as the vehicle gets nearer. Measured on real
+        head-on footage the violator's bar climbed 3.1 -> 6.75 px/frame
+        while its image speed stayed near 3.5, and it was never judged at
+        all. A vehicle coming straight at the camera barely translates in
+        the image; it expands. That is a known limitation of this gate,
+        recorded here rather than in a comment nobody reads.
+        """
+        if scale is not None and scale > 0.0:
+            return self.config.min_speed_fraction * scale
+        return self.config.min_speed_px
 
     def _heading(self, track: TrackState) -> Optional[Tuple[float, float, float]]:
         """Return ``(unit_x, unit_y, speed_px_per_frame)`` for a track.

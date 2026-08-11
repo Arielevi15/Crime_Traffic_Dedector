@@ -443,6 +443,72 @@ def test_empty_zone_is_not_trusted() -> None:
     assert direction is None
 
 
+def test_diagnose_does_not_change_what_the_detector_decides() -> None:
+    """Instrumenting a replay must not alter its outcome.
+
+    `diagnose` interrogates the detector before every `update` -- heading,
+    speed gate, zone state, peer consensus. Every one of those reads is
+    supposed to be free of side effects, and `DirectionBaseline.state`
+    says so in as many words. This asserts it rather than trusting it: an
+    observer that quietly perturbs the thing observed would make every
+    number it prints a fiction, and the fiction would look like evidence.
+    """
+    from road_crime.diagnose import diagnose
+
+    fixture = _fixture("flow_reversal_false_positive.jsonl")
+
+    detector = WrongWayDetector()
+    plain = []
+    for frame_index, tracks in load(fixture):
+        for track_id, x, y, width in tracks:
+            alert = detector.update(track_id, (x, y), frame=frame_index, scale=width)
+            if alert is not None:
+                plain.append((frame_index, alert["track_id"], alert["confidence"]))
+
+    observed = [
+        (alert["frame"], alert["track_id"], alert["confidence"])
+        for alert in diagnose(fixture)["alerts"]
+    ]
+    assert observed == plain, "diagnosing the run changed the run"
+
+
+def test_diagnose_accounts_for_every_frame_exactly_once() -> None:
+    """Each track-frame lands in one stage, and the stages cover them all.
+
+    A funnel that loses frames would understate whichever gate it dropped
+    them at, and the whole point of the table is to say which gate stopped
+    a vehicle from ever being judged.
+    """
+    from road_crime.diagnose import STAGES, diagnose
+
+    fixture = _fixture("divided_highway_clean.jsonl")
+    summary = diagnose(fixture)
+
+    fed = sum(len(tracks) for _, tracks in load(fixture))
+    counted = sum(
+        sum(counts[name] for name in STAGES)
+        for counts in summary["tracks"].values()
+    )
+    assert counted == fed, "{0} frames fed in, {1} accounted for".format(fed, counted)
+
+
+def test_required_speed_scales_with_the_vehicle_and_falls_back_without_it() -> None:
+    """The gate is a fraction of apparent width, or an absolute when unknown.
+
+    Pinned because `diagnose` now asks the detector this question instead
+    of recomputing it, and because the scaling has a consequence worth
+    keeping visible: a closing vehicle grows, so its own bar rises as it
+    approaches.
+    """
+    detector = WrongWayDetector(DetectorConfig(min_speed_fraction=0.05, min_speed_px=1.5))
+
+    assert detector.required_speed(60.0) == 3.0
+    assert detector.required_speed(140.0) == 7.0
+    assert detector.required_speed(None) == 1.5
+    assert detector.required_speed(0.0) == 1.5
+    assert detector.required_speed(140.0) > detector.required_speed(60.0)
+
+
 if __name__ == "__main__":
     import traceback
 
